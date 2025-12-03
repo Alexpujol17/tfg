@@ -61,9 +61,10 @@ def drawLine (arrImageNilColorsRes, xC1, yC1, xC2, yC2, rgbColor, nPx):
 
 
 ###
+from furniture_placement_utils import locate_furniture_in_room
 
 def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjacencies=None,
-                             lCorners=None, lPerimeter=None, plotPoint = False):
+                             lCorners=None, lPerimeter=None, plotPoint = False, pwalls=None):
 
     height                  = gParam['height']
     width                   = gParam['width']
@@ -72,8 +73,10 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
     idxNilColorExteriorWall = gParam['idxNilColorExteriorWall']
     idxNilColorFrontDoor    = gParam['idxNilColorFrontDoor']
     idxNilColorInteriorWall = gParam['idxNilColorInteriorWall']
+    idxNilColorInsideDoor   = gParam['idxNilColorInsideDoor']
     idxNilColorAux1         = gParam['idxNilColorAux1']
     idxNilColorAux2         = gParam['idxNilColorAux2']
+   
     
     grayAdjPlot             = gParam['grayAdjPlot']
     dxyCentroid             = gParam['dxyCentroid']
@@ -156,6 +159,25 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
                     for dy in np.arange(-dxyFrontDoor,dxyFrontDoor+1):
                         for k in range(3):
                             arrImageNilColorsRes[x+dx,y+dy,k] = listNilColors[idxNilColorFrontDoor][k]
+    
+
+    if pwalls is not None:
+        for (y1, x1, y2, x2, id) in pwalls:
+            if id == 'IW':
+                arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
+                                        listNilColors[idxNilColorInteriorWall], 3)
+            if id == 'ID':
+                arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
+                                        listNilColors[idxNilColorInsideDoor], 3)
+    
+    if lPerimeter is not None:
+        data = locate_furniture_in_room(gParam, lConnexComponents[1][2][0])
+        if data is not None:
+            pixelsdata = data["pixels"]
+            for (x,y) in pixelsdata:
+                for k in range(3):
+                    arrImageNilColorsRes[x,y,k] = listNilColors[idxNilColorAux1][k]
+
 
     # Add the corners (if required) from lCorners
     if lCorners is not None:
@@ -2233,6 +2255,7 @@ def findValidElementsInImage (gParam, sParam, oriPilImage):
     lAdjacenciesCC = None
     lCornersIdealImage = None
     lPerimeter = None
+    pwalls = None
     
     ####################################################################################################
     #
@@ -2248,7 +2271,7 @@ def findValidElementsInImage (gParam, sParam, oriPilImage):
 
     if not sanityCheckOKCentroids:
         return sanityCheckOKCentroids, sanityCheckOKContour, successfulWalkContour, successfulPerimeter, successfulFrontDoor, \
-               lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter
+               lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter, pwalls
     
     print('   Finding (and computing) valid elements in the image...')
 
@@ -2362,8 +2385,9 @@ def findValidElementsInImage (gParam, sParam, oriPilImage):
         successfulPerimeter, successfulFrontDoor, lPerimeter = \
             constructPerimeterWithFrontDoor (sParamTry, orderNearestCorners, lPositionsFrontDoor)
         
-        lConnexComponents, wall_mask = build_interior_walls_from_borders(gParam, rgbImageNilColors, lConnexComponents,
+        lConnexComponents, pwalls = build_interior_walls_from_borders(gParam, rgbImageNilColors, lConnexComponents,
                                                                                 imageContourSmoothed=imageContourSmoothed,
+                                                                                lPerimeter=lPerimeter,
                                                                                 min_segment_len=12,
                                                                                 thickness_px=2
                                                                                )
@@ -2378,7 +2402,7 @@ def findValidElementsInImage (gParam, sParam, oriPilImage):
 
     ###
     return sanityCheckOKCentroids, sanityCheckOKContour, successfulWalkContour, successfulPerimeter, successfulFrontDoor, \
-           lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter
+           lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter, pwalls
         
 
 ####################################################################################################################
@@ -2585,7 +2609,7 @@ def masiveRun(pathImages,pathSaveImages,matlabFileName):
         if gParam['MasiveRun'] == 1:
 
             sanityCheckOKCentroids, sanityCheckOKContour, successfulWalkContour, successfulPerimeter, successfulFrontDoor, \
-            lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter = \
+            lCentroids, lConnexComponents, lConnexComponentsCentroids, lAdjacenciesCC, lCornersIdealImage, lPerimeter, pwalls = \
                 findValidElementsInImage (gParam, sParam, oriPilImage)
 
         else:
@@ -2681,13 +2705,13 @@ def masiveRun(pathImages,pathSaveImages,matlabFileName):
         #
         intResImage = constructResultingImage \
                         (gParam, lConnexComponents, lCentroids=None, lAdjacencies=None,
-                         lCorners=None, lPerimeter=lPerimeter, plotPoint=False)
+                         lCorners=None, lPerimeter=lPerimeter, plotPoint=False, pwalls=pwalls)
         pilResImage = Image.frombytes('RGB', (gParam['width'], gParam['height']), bytes(intResImage))
         axs[1].title.set_text("Intermediate Image"); axs[1].imshow(pilResImage);
         #
         intResImage = constructResultingImage \
                         (gParam, lConnexComponents, lCentroids=lCentroids, lAdjacencies=lAdjacenciesCC,
-                        lCorners=lCornersIdealImage, lPerimeter=lPerimeter, plotPoint=failProcess)
+                        lCorners=lCornersIdealImage, lPerimeter=lPerimeter, plotPoint=failProcess, pwalls=pwalls)
         pilResImage = Image.frombytes('RGB', (gParam['width'], gParam['height']), bytes(intResImage))
         axs[2].title.set_text("Final Image"); axs[2].imshow(pilResImage);
         #

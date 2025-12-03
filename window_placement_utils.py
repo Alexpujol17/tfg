@@ -17,7 +17,7 @@ def segmentate_perimeter_into_walls_by_room(gParam, lPerimeter, lConnexComponent
 
     MIN_SEGMENT_LEN = 3
     # Distancia máxima para considerar que una pared interior "toca" el perímetro
-    PROXIMITY_THRESHOLD = 3
+    PROXIMITY_THRESHOLD = 5
 
     # --- 1) Obtener todos los píxeles de paredes interiores ---
     interior_wall_pixels = set()
@@ -133,6 +133,9 @@ def segmentate_perimeter_into_walls_by_room(gParam, lPerimeter, lConnexComponent
             # Último segmento
             if yb - current_y >= MIN_SEGMENT_LEN:
                 new_perimeter.append((x, current_y, x, yb, label))
+            
+            else:
+                new_perimeter.append((x, current_y, x, yb, label))
 
         # --- Muro horizontal ---
         elif y1 == y2:
@@ -148,6 +151,8 @@ def segmentate_perimeter_into_walls_by_room(gParam, lPerimeter, lConnexComponent
                 current_x = cut_x + 1
 
             if xb - current_x >= MIN_SEGMENT_LEN:
+                new_perimeter.append((current_x, y, xb, y, label))
+            else:
                 new_perimeter.append((current_x, y, xb, y, label))
 
         else:
@@ -183,84 +188,9 @@ def place_windows_heuristic(gParam, lPerimeter, lConnexComponentsCentroids,
                           WINDOW_SIZE_PX + 2*END_MARGIN_PX)
 
     new_perimeter = []
-    processed_walls = set()
-    total_placed = 0
 
     auxlPerimeter = segmentate_perimeter_into_walls_by_room(
         gParam, lPerimeter, lConnexComponents)
-
-    print(
-        f"[WINDOW] nppm={nppm} WINDOW={WINDOW_SIZE_PX}px MIN_WALL={MIN_WALL_LEN_PX}px MAX_DIST={max_dist_adj}")
-
-    for idx_cc, (room_type, _, room_pixels) in enumerate(lConnexComponentsCentroids):
-        room_pixels_set = set(room_pixels)
-        best = None
-        best_len = 0.0
-        reasons = []
-
-        for wall_idx, (x1, y1, x2, y2, label) in enumerate(auxlPerimeter):
-            if label != 'EW':
-                reasons.append((wall_idx, "not_EW"))
-                continue
-            if (not allow_multi_windows_per_wall) and (wall_idx in processed_walls):
-                reasons.append((wall_idx, "already_used"))
-                continue
-
-            wall_len = float(np.hypot(x2-x1, y2-y1))
-            if wall_len < MIN_WALL_LEN_PX:
-                reasons.append(
-                    (wall_idx, f"short({wall_len:.1f}<{MIN_WALL_LEN_PX})"))
-                continue
-
-            wall_pixels = getPointsLineBetweenXY(x1, y1, x2, y2)
-            if not _is_wall_adjacent_to_room(wall_pixels, room_pixels_set, max_dist=max_dist_adj):
-                reasons.append((wall_idx, "not_adjacent"))
-                continue
-
-            if wall_len > best_len:
-                best = (wall_idx, (x1, y1, x2, y2, label), wall_len)
-                best_len = wall_len
-
-        if not best:
-            # Muestra los 5 primeros motivos para esta habitación
-            print(
-                f"[ROOM {idx_cc}] type={room_type}: NO WINDOW. sample_reasons={reasons[:5]}")
-            continue
-
-        wall_idx, (x1, y1, x2, y2, _), wall_len = best
-        v = np.array([x2-x1, y2-y1], dtype=float)
-        v_unit = v / wall_len
-
-        usable = wall_len - 2*END_MARGIN_PX
-        if usable < WINDOW_SIZE_PX:
-            print(
-                f"[ROOM {idx_cc}] best_wall={wall_idx} TOO_SHORT_FOR_WINDOW usable={usable:.1f}px < {WINDOW_SIZE_PX}px")
-            continue
-
-        mid = np.array([(x1+x2)/2.0, (y1+y2)/2.0], dtype=float)
-        half = WINDOW_SIZE_PX/2.0
-        p1 = mid - v_unit*half
-        p2 = mid + v_unit*half
-
-        win_x1, win_y1 = int(round(p1[0])), int(round(p1[1]))
-        win_x2, win_y2 = int(round(p2[0])), int(round(p2[1]))
-
-        new_perimeter.append((x1, y1, win_x1, win_y1, 'EW'))
-        new_perimeter.append((win_x1, win_y1, win_x2, win_y2, 'WN'))
-        new_perimeter.append((win_x2, win_y2, x2, y2, 'EW'))
-
-        processed_walls.add(wall_idx)
-        total_placed += 1
-        print(f"[ROOM {idx_cc}] type={room_type}: WINDOW on wall {wall_idx} len={wall_len:.1f}px "
-              f"({win_x1},{win_y1})->({win_x2},{win_y2})")
-
-    # Añadir lo no modificado
-    for wall_idx, seg in enumerate(auxlPerimeter):
-        if wall_idx not in processed_walls:
-            new_perimeter.append(seg)
-
-    print(f"[WINDOW] Placed {total_placed} windows.")
-
     eval_info = hill_climbing_window_optimization(gParam, auxlPerimeter, lConnexComponentsCentroids)
     new_perimeter = eval_info['mejor_perimeter']
     return new_perimeter
@@ -322,7 +252,7 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, score_weights=None):
 
         for ventana_pixels in ventanas:
             # Usar función existente
-            if _is_wall_adjacent_to_room(ventana_pixels, hab['pixels'], max_dist=3):
+            if _is_wall_adjacent_to_room(ventana_pixels, hab['pixels'], max_dist=5):
                 tiene_ventana = True
                 break
 
@@ -871,7 +801,7 @@ def generar_vecino_eliminar_ventana(gParam, lPerimeter, lConnexComponentsCentroi
         "ventanas_restantes": len(ventanas_indices) - 1
     }
 
-def hill_climbing_window_optimization(gParam, lPerimeter_inicial, lConnexComponentsCentroids,
+def hill_climbing_window_optimization(gParam, lPerimeter_inicial, lConnexComponentsCentroids,                                  
                                      max_iteraciones=500,
                                      max_sin_mejora=50,
                                      probabilidades_operadores=None,
@@ -1102,4 +1032,299 @@ def hill_climbing_window_optimization(gParam, lPerimeter_inicial, lConnexCompone
         'iteraciones_sin_mejora': iteraciones_sin_mejora,
         'historial': historial,
         'estadisticas_operadores': stats_ops
+    }
+
+def hill_climbing_window_optimization2(gParam, lPerimeter_inicial, lConnexComponentsCentroids,
+                                     max_iteraciones=500,
+                                     max_sin_mejora=50,
+                                     probabilidades_operadores=None,
+                                     score_weights=None,
+                                     verbose=True):
+    """
+    Optimiza la colocación de ventanas usando Hill Climbing con múltiples operadores.
+    MODIFICADO: Ajuste de probabilidades adaptativas para ser más agresivo llenando huecos.
+    """
+    import numpy as np
+    import random
+    
+    # --- Inicialización ---
+    mejor_perimeter = lPerimeter_inicial
+    eval_inicial = evaluar(gParam, mejor_perimeter, lConnexComponentsCentroids, score_weights)
+    mejor_score = eval_inicial['score_total']
+    score_inicial = mejor_score
+    
+    iteraciones_sin_mejora = 0
+    historial = []
+    
+    # Estadísticas de operadores
+    stats_ops = {
+        'Op1': {'intentos': 0, 'exitos': 0, 'mejoras': 0},
+        'Op2': {'intentos': 0, 'exitos': 0, 'mejoras': 0},
+        'Op3': {'intentos': 0, 'exitos': 0, 'mejoras': 0},
+        'Op4': {'intentos': 0, 'exitos': 0, 'mejoras': 0}
+    }
+    
+    if verbose:
+        print("=" * 70)
+        print("HILL CLIMBING - Optimización de Ventanas")
+        print("=" * 70)
+        print(f"Score inicial: {mejor_score:.4f}")
+        print(f"  Cobertura: {eval_inicial['componentes']['cobertura']:.2%}")
+        print(f"  Ventanas: {eval_inicial['debug_info']['num_ventanas']}")
+        print(f"  Habitaciones: {eval_inicial['debug_info']['num_habitaciones_total']}")
+        print(f"  Habitaciones con ventana: {eval_inicial['debug_info']['habitaciones_con_ventana']}")
+        print("-" * 70)
+    
+    # --- Loop principal de Hill Climbing ---
+    for iteracion in range(max_iteraciones):
+        
+        # 1) Determinar probabilidades adaptativas si no se especificaron
+        if probabilidades_operadores is None:
+            eval_actual = evaluar(gParam, mejor_perimeter, lConnexComponentsCentroids, score_weights)
+            score_cobertura = eval_actual['componentes']['cobertura']
+            num_ventanas = eval_actual['debug_info']['num_ventanas']
+            num_habitaciones = eval_actual['debug_info']['num_habitaciones_total']
+            habitaciones_sin_ventana = eval_actual['debug_info']['habitaciones_sin_ventana']
+            
+            # Estrategia adaptativa MEJORADA
+            if habitaciones_sin_ventana > 0:
+                # CRITICO: Si falta alguna habitación, priorizar AÑADIR masivamente
+                probs = {'Op1': 0.10, 'Op2': 0.20, 'Op3': 0.65, 'Op4': 0.05}
+            elif num_ventanas > num_habitaciones * 1.8:
+                # Demasiadas ventanas → priorizar ELIMINAR
+                probs = {'Op1': 0.40, 'Op2': 0.20, 'Op3': 0.05, 'Op4': 0.35}
+            elif score_cobertura >= 0.95:
+                # Cobertura perfecta → optimizar posición fina
+                probs = {'Op1': 0.60, 'Op2': 0.30, 'Op3': 0.05, 'Op4': 0.05}
+            else:
+                # Balanceado
+                probs = {'Op1': 0.45, 'Op2': 0.30, 'Op3': 0.15, 'Op4': 0.10}
+        else:
+            probs = probabilidades_operadores
+        
+        # 2) Elegir operador aleatorio
+        ops = list(probs.keys())
+        pesos = list(probs.values())
+        operador = random.choices(ops, weights=pesos)[0]
+        
+        stats_ops[operador]['intentos'] += 1
+        
+        # 3) Generar vecino según operador
+        if operador == 'Op1':
+            vecino_perimeter, info = generar_vecino_mover_ventana(gParam, mejor_perimeter)
+        elif operador == 'Op2':
+            vecino_perimeter, info = generar_vecino_intercambiar_ventana_de_pared(
+                gParam, mejor_perimeter, lConnexComponentsCentroids
+            )
+        elif operador == 'Op3':
+            vecino_perimeter, info = generar_vecino_anadir_ventana(
+                gParam, mejor_perimeter, lConnexComponentsCentroids
+            )
+        elif operador == 'Op4':
+            vecino_perimeter, info = generar_vecino_eliminar_ventana(
+                gParam, mejor_perimeter, lConnexComponentsCentroids
+            )
+        else:
+            continue
+        
+        # 4) Verificar si el vecino es válido
+        movimiento_exitoso = info.get('moved', info.get('added', info.get('removed', False)))
+        
+        if not movimiento_exitoso:
+            historial.append({
+                'iteracion': iteracion, 'score': mejor_score, 'operador': operador,
+                'exito_operador': False, 'mejora': False
+            })
+            continue
+        
+        stats_ops[operador]['exitos'] += 1
+        
+        # 5) Evaluar vecino
+        eval_vecino = evaluar(gParam, vecino_perimeter, lConnexComponentsCentroids, score_weights)
+        score_vecino = eval_vecino['score_total']
+        
+        # 6) Criterio de aceptación: Hill Climbing estricto
+        if score_vecino > mejor_score:
+            mejor_perimeter = vecino_perimeter
+            mejora = score_vecino - mejor_score
+            mejor_score = score_vecino
+            iteraciones_sin_mejora = 0
+            stats_ops[operador]['mejoras'] += 1
+            
+            if verbose and (iteracion % 10 == 0 or mejora > 0.001):
+                tipo_ventana = "STD"
+                if operador == 'Op3' and info.get('window_type') == 'SML': tipo_ventana = "SML"
+                
+                print(f"[Iter {iteracion:4d}] ✓ MEJORA ({operador}) | Score: {mejor_score:.4f} (+{mejora:.4f}) | "
+                      f"Cob: {eval_vecino['componentes']['cobertura']:.2%} | {tipo_ventana if operador=='Op3' else ''}")
+            
+            historial.append({
+                'iteracion': iteracion, 'score': mejor_score, 'operador': operador,
+                'exito_operador': True, 'mejora': True, 'delta_score': mejora
+            })
+        else:
+            iteraciones_sin_mejora += 1
+            historial.append({
+                'iteracion': iteracion, 'score': mejor_score, 'operador': operador,
+                'exito_operador': True, 'mejora': False, 'delta_score': score_vecino - mejor_score
+            })
+        
+        # 7) Criterio de parada
+        if iteraciones_sin_mejora >= max_sin_mejora:
+            if verbose:
+                print(f"\n{'='*70}")
+                print(f"⚠️  Parada temprana: {max_sin_mejora} iteraciones sin mejora")
+            break
+    
+    # --- Evaluación final ---
+    eval_final = evaluar(gParam, mejor_perimeter, lConnexComponentsCentroids, score_weights)
+    
+    mejora_absoluta = mejor_score - score_inicial
+    mejora_relativa = (mejora_absoluta / score_inicial * 100) if score_inicial > 0 else 0
+    
+    if verbose:
+        print("=" * 70)
+        print("RESULTADOS FINALES")
+        print("=" * 70)
+        print(f"Score inicial:  {score_inicial:.4f}")
+        print(f"Score final:    {mejor_score:.4f}")
+        print(f"Mejora:         {mejora_absoluta:+.4f} ({mejora_relativa:+.1f}%)")
+        print(f"Iteraciones:    {iteracion + 1} / {max_iteraciones}")
+        print()
+        print(f"  Cobertura:              {eval_final['componentes']['cobertura']:.2%}")
+        print(f"  Ventanas totales:       {eval_final['debug_info']['num_ventanas']}")
+        print(f"  Habitaciones s/ventana: {eval_final['debug_info']['habitaciones_sin_ventana']}")
+        print("=" * 70)
+    
+    return {
+        'mejor_perimeter': mejor_perimeter,
+        'mejor_score': mejor_score,
+        'score_inicial': score_inicial,
+        'eval_final': eval_final,
+        'estadisticas_operadores': stats_ops
+    }
+
+def generar_vecino_anadir_ventana2(gParam, lPerimeter, lConnexComponentsCentroids):
+    """
+    Añade UNA ventana en un muro aleatorio.
+    MODIFICADO (FIX): Corregido desempaquetado de pts_check para evitar ValueError.
+    """
+    import numpy as np
+    import random
+    from Analysis_StyleGAN_functions_03_pindatafinal24_Relaxed import getPointsLineBetweenXY
+    
+    nppm = gParam['nPixelsPerMeter']
+    
+    # Tamaños de ventana
+    W_STD_LEN = 1.2 * nppm
+    W_SML_LEN = 0.6 * nppm
+    MARGIN = 0.15 * nppm
+    
+    # Espacio mínimo requerido (físico)
+    MIN_SPACE_STD = W_STD_LEN + 2 * MARGIN
+    MIN_SPACE_SML = W_SML_LEN + 2 * MARGIN
+    
+    # 1) Identificar candidatos
+    candidatos = []
+    
+    for idx_seg, (x1, y1, x2, y2, label) in enumerate(lPerimeter):
+        if label != 'EW':
+            continue
+        
+        length = float(np.hypot(x2 - x1, y2 - y1))
+        
+        can_fit_std = (length >= MIN_SPACE_STD)
+        can_fit_sml = (length >= MIN_SPACE_SML)
+        
+        if can_fit_sml: # Al menos cabe la pequeña
+            # Chequear habitación asociada
+            habitacion_asociada = None
+            wall_pixels = getPointsLineBetweenXY(x1, y1, x2, y2)
+            
+            # Optimización: solo miramos punto medio
+            if len(wall_pixels) > 0:
+                mid_idx = len(wall_pixels)//2
+                pts_check = [wall_pixels[mid_idx]]
+                
+                # Función auxiliar local de búsqueda rápida
+                for idx_cc, (idxColor, rgbColor, room_pixels) in enumerate(lConnexComponentsCentroids):
+                    if idxColor in {gParam['idxNilColorBackground'], gParam['idxNilColorExteriorWall'], 
+                                  gParam['idxNilColorFrontDoor'], gParam['idxNilColorInteriorWall']}:
+                        continue
+                    
+                    # Chequeo rápido de proximidad
+                    match = False
+                    room_set = set(room_pixels)
+                    
+                    # --- FIX: Desempaquetado seguro ---
+                    for pt in pts_check:
+                        # Tomamos explícitamente los indices 0 y 1 para ignorar cualquier dato extra
+                        px, py = int(pt[0]), int(pt[1]) 
+                        
+                        for dx in range(-5, 6): # Radio aumentado a 5
+                            for dy in range(-5, 6):
+                                if (px+dx, py+dy) in room_set:
+                                    match = True
+                                    break
+                            if match: break
+                        if match: break
+                    
+                    if match:
+                        habitacion_asociada = idx_cc
+                        break
+
+            candidatos.append({
+                'idx': idx_seg,
+                'coords': (x1, y1, x2, y2),
+                'length': length,
+                'can_fit_std': can_fit_std,
+                'room': habitacion_asociada
+            })
+    
+    if not candidatos:
+        return lPerimeter, {"added": False, "reason": "no_space_available"}
+    
+    # 2) Selección ponderada (Priorizar habitaciones sin ventana si pasáramos info, aquí aleatorio)
+    seleccion = random.choice(candidatos)
+    
+    idx_muro = seleccion['idx']
+    x1, y1, x2, y2 = seleccion['coords']
+    total_len = seleccion['length']
+    
+    # 3) Determinar tipo de ventana
+    if seleccion['can_fit_std']:
+        # Si caben ambas, preferimos estándar (80%) pero a veces pequeña (20%) para variedad
+        w_len_px = W_STD_LEN if random.random() < 0.8 else W_SML_LEN
+        w_type = 'STD' if w_len_px == W_STD_LEN else 'SML'
+    else:
+        w_len_px = W_SML_LEN
+        w_type = 'SML'
+        
+    # 4) Calcular coordenadas (centrada en el segmento disponible)
+    v = np.array([x2 - x1, y2 - y1], dtype=float)
+    v_unit = v / total_len
+    mid = np.array([(x1 + x2)/2.0, (y1 + y2)/2.0])
+    
+    half_win = w_len_px / 2.0
+    p1 = mid - v_unit * half_win
+    p2 = mid + v_unit * half_win
+    
+    wx1, wy1 = int(p1[0]), int(p1[1])
+    wx2, wy2 = int(p2[0]), int(p2[1])
+    
+    # 5) Reconstruir perímetro
+    new_perimeter = []
+    for i, seg in enumerate(lPerimeter):
+        if i == idx_muro:
+            new_perimeter.append((x1, y1, wx1, wy1, 'EW'))
+            new_perimeter.append((wx1, wy1, wx2, wy2, 'WN'))
+            new_perimeter.append((wx2, wy2, x2, y2, 'EW'))
+        else:
+            new_perimeter.append(seg)
+            
+    return new_perimeter, {
+        "added": True, 
+        "wall_idx": idx_muro,
+        "window_type": w_type,
+        "room": seleccion['room']
     }
