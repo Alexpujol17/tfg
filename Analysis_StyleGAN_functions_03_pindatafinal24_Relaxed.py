@@ -61,7 +61,7 @@ def drawLine (arrImageNilColorsRes, xC1, yC1, xC2, yC2, rgbColor, nPx):
 
 
 ###
-from furniture_placement_utils import locate_furniture_in_room
+from furniture_placement_utils import solve_master_bedroom, solve_dining_room, solve_kitchen, solve_bathroom, solve_living_room, solve_single_bedroom
 
 def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjacencies=None,
                              lCorners=None, lPerimeter=None, plotPoint = False, pwalls=None):
@@ -171,13 +171,202 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
                                         listNilColors[idxNilColorInsideDoor], 3)
     
     if lPerimeter is not None:
-        data = locate_furniture_in_room(gParam, lConnexComponents[1][2][0])
-        if data is not None:
-            pixelsdata = data["pixels"]
-            for (x,y) in pixelsdata:
-                for k in range(3):
-                    arrImageNilColorsRes[x,y,k] = listNilColors[idxNilColorAux1][k]
 
+                # ---------------------------------------------------------
+        # BLOQUE DE EJECUCIÓN Y PINTADO (Run Script)
+        # ---------------------------------------------------------
+
+        result = solve_master_bedroom(gParam, lConnexComponents[1][2][0], lPerimeter, pwalls, debug=True)
+
+        if result: 
+            # Entramos aquí si hay ÉXITO TOTAL o ÉXITO PARCIAL (Solo cama)
+            
+            if result["success"]:
+                print(f"   [OK] Solución Completa: {result['config_level']}")
+            else:
+                print(f"   [WARN] Solución Parcial: {result['config_level']} (No cupo el armario)")
+
+            # Pintamos TODOS los items que vengan en la lista, sean 1 o 2
+            for item in result["items"]:
+                # Extraemos coordenadas
+                x1, x2 = item["x1"], item["x2"]
+                y1, y2 = item["y1"], item["y2"]
+                
+                # Color: Rojo para cama, Verde para armario
+                if "bed" in item["type"]:
+                    color = [255, 100, 100] 
+                else:
+                    color = [100, 255, 100] 
+                    
+                # CLAMP: Aseguramos que no se salga de la imagen (Evita errores de índice)
+                H_img, W_img, _ = arrImageNilColorsRes.shape
+                x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                
+                # Pintamos
+                arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+
+        else:
+            print("   [ERROR] Habitación inamueblable (Ni siquiera cabe una cama pequeña).")
+
+        # ---------------------------------------------------------
+        # DINING ROOM - Mesa en el centro
+        # ---------------------------------------------------------
+        # Índice 4 = DiningR (color ocre/magenta según dataset)
+        if len(lConnexComponents) > 4 and len(lConnexComponents[4][2]) > 0:
+            dining_pixels = lConnexComponents[4][2][0]  # Primera componente conexa del DiningR
+            
+            result_dining = solve_dining_room(gParam, dining_pixels, lPerimeter, pwalls, debug=True)
+            
+            if result_dining and result_dining["success"]:
+                print(f"   [OK] Dining Room: Mesa {result_dining['config_level']} colocada")
+                
+                for item in result_dining["items"]:
+                    x1, x2 = item["x1"], item["x2"]
+                    y1, y2 = item["y1"], item["y2"]
+                    
+                    # Color azul para mesa de comedor
+                    color = [100, 100, 255]
+                    
+                    H_img, W_img, _ = arrImageNilColorsRes.shape
+                    x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                    y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                    
+                    arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+            else:
+                print("   [WARN] Dining Room: No se pudo colocar mesa")
+
+        # ---------------------------------------------------------
+        # KITCHEN - Encimera y Nevera
+        # ---------------------------------------------------------
+        # Índice 2 = Kitchen (color verde)
+        if len(lConnexComponents) > 2 and len(lConnexComponents[2][2]) > 0:
+            kitchen_pixels = lConnexComponents[2][2][0]
+            
+            result_kitchen = solve_kitchen(gParam, kitchen_pixels, lPerimeter, pwalls, debug=True)
+            
+            if result_kitchen:
+                if result_kitchen["success"]:
+                    print(f"   [OK] Kitchen: {result_kitchen['config_level']}")
+                else:
+                    print(f"   [WARN] Kitchen: {result_kitchen['config_level']} (incompleto)")
+                
+                for item in result_kitchen["items"]:
+                    x1, x2 = item["x1"], item["x2"]
+                    y1, y2 = item["y1"], item["y2"]
+                    
+                    # Colores: Marrón para encimera, Blanco para nevera
+                    if item["type"] == "countertop":
+                        color = [139, 90, 43]  # Marrón
+                    else:  # fridge
+                        color = [220, 220, 220]  # Gris claro (nevera)
+                    
+                    H_img, W_img, _ = arrImageNilColorsRes.shape
+                    x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                    y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                    
+                    arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+            else:
+                print("   [WARN] Kitchen: No se pudo colocar muebles")
+
+        # ---------------------------------------------------------
+        # BATHROOM - Baño (Ducha, WC, Pica)
+        # ---------------------------------------------------------
+        # Índice 3 = Bathroom (color cyan/azul-verdoso)
+        if len(lConnexComponents) > 3 and len(lConnexComponents[3][2]) > 0:
+            bathroom_pixels = lConnexComponents[3][2][0]
+            
+            result_bathroom = solve_bathroom(gParam, bathroom_pixels, lPerimeter, pwalls, debug=True)
+            
+            if result_bathroom:
+                if result_bathroom["success"]:
+                    print(f"   [OK] Bathroom: {result_bathroom['config_level']}")
+                else:
+                    print(f"   [WARN] Bathroom: {result_bathroom['config_level']} (incompleto)")
+                
+                for item in result_bathroom["items"]:
+                    x1, x2 = item["x1"], item["x2"]
+                    y1, y2 = item["y1"], item["y2"]
+                    
+                    # Colores
+                    if item["type"] == "shower":
+                        color = [0, 255, 255]    # Cyan (Ducha)
+                    elif item["type"] == "toilet":
+                        color = [0, 0, 255]      # Azul (WC)
+                    elif item["type"] == "sink":
+                        color = [139, 90, 43] # Marron (Pica)
+                    else:
+                        color = [128, 128, 128]  # Gris (Fallback)
+                    
+                    H_img, W_img, _ = arrImageNilColorsRes.shape
+                    x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                    y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                    
+                    arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+            else:
+                print("   [WARN] Bathroom: No se pudo resolver la colocación")
+
+        # ---------------------------------------------------------
+        # LIVING ROOM - Salón (Sofá + TV)
+        # ---------------------------------------------------------
+        # Índice 5 = LivingRoom (color rojo/naranja según dataset, en listaNilColors puede variar)
+        if len(lConnexComponents) > 5 and len(lConnexComponents[0][2]) > 0:
+            living_pixels = lConnexComponents[0][2][0]
+            
+            result_living = solve_living_room(gParam, living_pixels, lPerimeter, pwalls, debug=True)
+            
+            if result_living and result_living["success"]:
+                 print(f"   [OK] LivingRoom: {result_living['config_level']}")
+                 
+                 for item in result_living["items"]:
+                    x1, x2 = item["x1"], item["x2"]
+                    y1, y2 = item["y1"], item["y2"]
+                    
+                    if item["type"] == "sofa":
+                        color = [0, 0, 128] # Azul Oscuro
+                    elif item["type"] == "tv_unit":
+                        color = [50, 50, 50] # Gris Oscuro
+                    else:
+                        color = [100, 100, 100]
+                        
+                    H_img, W_img, _ = arrImageNilColorsRes.shape
+                    x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                    y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                    
+                    arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+            else:
+                 print("   [WARN] LivingRoom: No se pudo colocar Sofá/TV")
+
+        # ---------------------------------------------------------
+        # SINGLE BEDROOM - Dormitorio Individual
+        # ---------------------------------------------------------
+        # Índice 6 = Single Bedroom (o segundo dormitorio)
+        if len(lConnexComponents) > 6 and len(lConnexComponents[6][2]) > 0:
+            single_pixels = lConnexComponents[6][2][0]
+            
+            result_single = solve_single_bedroom(gParam, single_pixels, lPerimeter, pwalls, debug=True)
+            
+            if result_single and result_single["success"]:
+                 print(f"   [OK] SingleBedroom: {result_single['config_level']}")
+                 
+                 for item in result_single["items"]:
+                    x1, x2 = item["x1"], item["x2"]
+                    y1, y2 = item["y1"], item["y2"]
+                    
+                    if item["type"] == "bed_single":
+                        color = [100, 149, 237]  # Cornflower Blue (Cama)
+                    elif item["type"] == "wardrobe":
+                        color = [139, 69, 19]    # Saddle Brown (Armario)
+                    else:
+                        color = [150, 150, 150]
+                        
+                    H_img, W_img, _ = arrImageNilColorsRes.shape
+                    x1_safe, x2_safe = max(0, x1), min(H_img, x2)
+                    y1_safe, y2_safe = max(0, y1), min(W_img, y2)
+                    
+                    arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
+            else:
+                 print("   [WARN] SingleBedroom: No se pudo colocar muebles")
 
     # Add the corners (if required) from lCorners
     if lCorners is not None:
@@ -2385,11 +2574,16 @@ def findValidElementsInImage (gParam, sParam, oriPilImage):
         successfulPerimeter, successfulFrontDoor, lPerimeter = \
             constructPerimeterWithFrontDoor (sParamTry, orderNearestCorners, lPositionsFrontDoor)
         
+        # 0. CONFIGURACIÓN DE PUERTAS (Si es interactivo)
+        from interior_doors_placement_utils import solicitar_config_puertas_usuario
+        door_config = solicitar_config_puertas_usuario()
+
         lConnexComponents, pwalls = build_interior_walls_from_borders(gParam, rgbImageNilColors, lConnexComponents,
                                                                                 imageContourSmoothed=imageContourSmoothed,
                                                                                 lPerimeter=lPerimeter,
                                                                                 min_segment_len=12,
-                                                                                thickness_px=2
+                                                                                thickness_px=2,
+                                                                                config=door_config
                                                                                )
         
         if successfulPerimeter:
@@ -2470,7 +2664,7 @@ def defineGlobalAndSearchParameters (heightImage, widthImage):
     idxNilColorInteriorWall = 14
     idxNilColorInsideDoor   = 15
     idxNilColorEntrance     =  9
-    idxNilColorBalcony      =  8
+    idxNilColorBalcony      =  8   
     idxNilColorAux1         =  7   ### A very little used color
     idxNilColorAux2         =  6   ### A very little used color
     idxNilColorWindow       = 16   ### Window color
@@ -2638,11 +2832,7 @@ def masiveRun(pathImages,pathSaveImages,matlabFileName):
             lKernelsContourSearch, lKernelsContourSmooth = defineKernelsForCleanAndSmoothContour()
             imageContourSmoothed = cleanAndSmoothContour (imageContour, lKernelsContourSearch, lKernelsContourSmooth)
             #
-            lConnexComponents, wall_mask = build_interior_walls_from_borders(gParam, rgbImageNilColors, lConnexComponents,
-                                                                                imageContourSmoothed=imageContourSmoothed,
-                                                                                min_segment_len=12,
-                                                                                thickness_px=1
-                                                                            )
+            # lConnexComponents, wall_mask = build_interior_walls_from_borders(...)  <-- MOVED DOWN
             sanityCheckOKContour = sanityCheckContourSmoothed (gParam, imageContourSmoothed, lCentroids)
             #
             successfulWalkContour, orderContour = walkContourInOrder (gParam, imageContourSmoothed)
@@ -2681,6 +2871,15 @@ def masiveRun(pathImages,pathSaveImages,matlabFileName):
                 #
                 successfulPerimeter, successfulFrontDoor, lPerimeter = \
                   constructPerimeterWithFrontDoor (sParamTry2, orderNearestCorners, lPositionsFrontDoor)
+
+            # Construimos muros interiores AHORA que tenemos el perímetro final
+            # Esto permite rellenar huecos entre las habitaciones y el nuevo perímetro
+            lConnexComponents,  pwalls = build_interior_walls_from_borders(gParam, rgbImageNilColors, lConnexComponents,
+                                                                                imageContourSmoothed=imageContourSmoothed,
+                                                                                lPerimeter=lPerimeter, 
+                                                                                min_segment_len=12,
+                                                                                thickness_px=1
+                                                                            )
 
         ################################################
         #

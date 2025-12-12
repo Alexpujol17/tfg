@@ -3,25 +3,53 @@ import networkx as nx
 import math
 from collections import Counter
 
+def solicitar_config_puertas_usuario():
+    """Pregunta al usuario por la configuración de puertas."""
+    print("\n=== CONFIGURACIÓN DE PUERTAS ===")
+    print("¿Dónde prefieres alinear las puertas en la pared?")
+    print("   1: Izquierda (Inicio de pared)")
+    print("   2: Centro")
+    print("   3: Derecha (Final de pared)")
+    
+    try:
+        opcion = input("   Opción [1]: ") or "1"
+    except KeyboardInterrupt:
+        opcion = "1"
+        
+    mapping = {'1': 'LEFT', '2': 'CENTER', '3': 'RIGHT'}
+    posicion = mapping.get(opcion, 'LEFT')
+    
+    print(f"   ✅ Alinear puertas: {posicion}")
+    return {'posicion_puertas': posicion}
+
 def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
+    """
+    Construye el 'Mapa de Relaciones' (Grafo) de la casa.
+    Analiza qué habitaciones son vecinas y comparten pared.
+    """
     height = gParam['height']
     width = gParam['width']
     idxBG = gParam['idxNilColorBackground']
     idxEW = gParam['idxNilColorExteriorWall']
     
-    # Mapa rasterizado de IDs únicos (UID)
+    # Creamos un mapa vacío (una cuadrícula de píxeles) para pintar las habitaciones
     room_map = np.full((height, width), -1, dtype=np.int32)
     
-    # Diccionario: UID -> TIPO DE HABITACIÓN (COLOR ID)
-    # Necesario para saber si el UID 5 es un baño o una cocina.
+    # Diccionario para recordar qué ID numérico corresponde a qué tipo de habitación
+    # Ej: El ID 5 es una Cocina.
     uid_to_room_type = {} 
     
     current_uid = 0
     
-    # 1. GENERAR MAPA Y METADATA
+    # ==========================================
+    # 1. PINTAR EL MAPA (RASTERIZACIÓN)
+    # ==========================================
+    # Convertimos la lista de formas geométricas en una imagen de píxeles.
+    # Así sabremos que el píxel (10, 20) pertenece al Salón.
     for type_index_in_list, component in enumerate(lConnexComponents):
-        real_room_type_id = component[0] # Este es el ID del color (0=Living, etc)
+        real_room_type_id = component[0] # Tipo real (0=Salón, 2=Cocina, etc.)
         
+        # Ignoramos el fondo negro y los muros exteriores
         if real_room_type_id in [idxBG, idxEW]: 
             continue
             
@@ -31,43 +59,60 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
             for cc in list_of_ccs:
                 this_room_uid = current_uid
                 
-                # Guardamos el tipo real
+                # Guardamos qué es esta habitación
                 uid_to_room_type[this_room_uid] = real_room_type_id 
                 current_uid += 1
                 
+                # Rellenamos los píxeles en el mapa
                 for pixel in cc:
                     if len(pixel) >= 2:
                         r, c = pixel[0], pixel[1]
                         if 0 <= r < height and 0 <= c < width:
                             room_map[r, c] = this_room_uid
 
-    # 2. INICIALIZAR GRAFO
+    # ==========================================
+    # 2. CREAR LOS PUNTOS DEL GRAFO (NODOS)
+    # ==========================================
     G = nx.Graph()
     valid_rooms = np.unique(room_map)
+    # Quitamos el -1 (que es espacio vacío)
     valid_rooms = valid_rooms[valid_rooms != -1]
     G.add_nodes_from(valid_rooms)
 
-    # 3. ANALIZAR PAREDES
+    for uid in valid_rooms:
+        r_type = uid_to_room_type.get(uid, -1)
+        G.nodes[uid]['room_type'] = r_type
+
+    # ==========================================
+    # 3. ANALIZAR LAS PAREDES (ENLACES)
+    # ==========================================
     for w_idx, wall in enumerate(pwalls):
         x1, y1, x2, y2, tag = wall
         wall_len = math.hypot(x2 - x1, y2 - y1)
         
+        # Si la pared mide menos de 5 píxeles, es ruido, la ignoramos.
         if wall_len < 5: continue
 
+        # Calculamos el punto medio de la pared
         mx, my = int((x1 + x2) / 2), int((y1 + y2) / 2)
         is_horiz = abs(x1 - x2) > abs(y1 - y2)
         
-        # Radar
+        # --- EL RADAR DE VECINOS ---
+        # Desde el centro de la pared, miramos a izquierda y derecha (o arriba y abajo)
+        # para ver qué habitaciones están tocando esta pared.
         neighbors_side_A = []
         neighbors_side_B = []
-        scan_range = range(2, 8)
+        scan_range = range(2, 8) # Miramos entre 2 y 8 píxeles de distancia
         
         for offset in scan_range:
             if is_horiz:
+                # Si pared horizontal, miramos arriba (A) y abajo (B)
                 pt_A = (mx, my - offset); pt_B = (mx, my + offset)
             else:
+                # Si pared vertical, miramos izquierda (A) y derecha (B)
                 pt_A = (mx - offset, my); pt_B = (mx + offset, my)
             
+            # Verificamos qué habitación hay en esos puntos
             if 0 <= pt_A[0] < width and 0 <= pt_A[1] < height:
                 rid = room_map[int(pt_A[1]), int(pt_A[0])]
                 if rid != -1: neighbors_side_A.append(rid)
@@ -75,19 +120,24 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
                 rid = room_map[int(pt_B[1]), int(pt_B[0])]
                 if rid != -1: neighbors_side_B.append(rid)
 
+        # Decidimos cuál es la habitación predominante a cada lado
         room_A = -1; room_B = -1
         if neighbors_side_A: room_A = Counter(neighbors_side_A).most_common(1)[0][0]
         if neighbors_side_B: room_B = Counter(neighbors_side_B).most_common(1)[0][0]
             
+        # Si tenemos dos habitaciones distintas compartiendo pared...
         if room_A != -1 and room_B != -1 and room_A != room_B:
-            # Recuperar TIPOS para calcular prioridad
+            # Recuperamos qué TIPO son (ej: Cocina y Salón)
             type_A = uid_to_room_type.get(room_A, -1)
             type_B = uid_to_room_type.get(room_B, -1)
             
-            # CALCULAR PRIORIDAD ARQUITECTÓNICA
+            # --- PUNTUACIÓN DE LA CONEXIÓN ---
+            # Calculamos cuán buena idea es poner una puerta aquí.
             priority_score = get_architectural_priority(type_A, type_B, wall_len)
             
-            # Añadir al grafo (Maximizando el score)
+            # Añadimos la conexión al Grafo.
+            # Si ya existía conexión (otra pared entre las mismas habitaciones),
+            # nos quedamos solo con la que tenga mejor puntuación.
             if G.has_edge(room_A, room_B):
                 prev_score = G[room_A][room_B]['weight']
                 if priority_score > prev_score:
@@ -95,13 +145,18 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
             else:
                 G.add_edge(room_A, room_B, wall_idx=w_idx, weight=priority_score, length=wall_len)
 
-    # 4. START NODE (Detección de Entrada)
+    # ==========================================
+    # 4. BUSCAR LA ENTRADA PRINCIPAL (Start Node)
+    # ==========================================
     start_room_uid = -1
     
+    # Intentamos encontrar la puerta de entrada ('FD') en el perímetro
     if lPerimeter:
         fd_walls = [w for w in lPerimeter if w[4] == 'FD']
         if fd_walls:
             fd = fd_walls[0]
+            # Lanzamos un rayo desde la puerta hacia el centro de la casa
+            # para ver qué habitación es la primera que toca (el Recibidor).
             fx, fy = (fd[0] + fd[2]) // 2, (fd[1] + fd[3]) // 2
             center_x, center_y = width // 2, height // 2
             dir_x = 1 if center_x > fx else -1; dir_y = 1 if center_y > fy else -1
@@ -115,221 +170,241 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
                     rid = room_map[chk_y, chk_x]
                     if rid != -1: start_room_uid = rid; break
 
-    # Fallback Start Node (Por prioridad lógica)
+    # Si falla el rayo, usamos lógica por tipo de habitación
     if start_room_uid == -1 and uid_to_room_type:
-        # 1. Entrance (9)
+        # 1. Buscamos si hay algo etiquetado como "Entrance" (9)
         for uid, rtype in uid_to_room_type.items():
             if rtype == 9: start_room_uid = uid; break
-        # 2. Living (0)
+        # 2. Si no, empezamos por el Salón (0)
         if start_room_uid == -1:
              for uid, rtype in uid_to_room_type.items():
                 if rtype == 0: start_room_uid = uid; break
     
-    # 3. Cualquiera válido
+    # 3. Si todo falla, cogemos la primera habitación que haya
     if start_room_uid == -1 and len(valid_rooms) > 0:
         start_room_uid = valid_rooms[0]
 
     return G, start_room_uid
 
-import networkx as nx
-import math
-
-def place_interior_doors_mst(gParam, pwalls, G, start_room_id):
+def place_interior_doors_mst(gParam, pwalls, G, start_room_id, config=None):
     """
-    Coloca el MÍNIMO número de puertas posible (N-1) para conectar todas las habitaciones.
-    Usa un Maximum Spanning Tree ponderado por la longitud de la pared para
-    priorizar poner puertas en las paredes más grandes y cómodas.
+    ALGORITMO MAESTRO DE PUERTAS INTERIORES:
+    Usa el Grafo de Adyacencias para decidir dónde poner puertas interiores.
+    - Balcones: Puerta grande y CENTRADA.
+    - Resto: Puerta estándar y posición según CONFIGURACIÓN (Left/Center/Right).
     """
     
-    # --- CONFIGURACIÓN FÍSICA ---
-    # Ajusta esto según tu escala (25px = 1m)
-    DOOR_SIZE_PX = 9       # ~80cm
-    CORNER_MARGIN_PX = 2    # ~15cm (marco + seguridad)
-    MIN_WALL_LEN = DOOR_SIZE_PX + (CORNER_MARGIN_PX * 2)
+    # --- CONFIGURACIÓN ---
+    STANDARD_DOOR_SIZE = 9
+    BALCONY_DOOR_SIZE = 25
+    CORNER_MARGIN_PX = 2    
+    MIN_WALL_LEN = STANDARD_DOOR_SIZE + (CORNER_MARGIN_PX * 2)
 
-    # 1. PRE-FILTRADO DEL GRAFO (Física)
-    # Eliminamos del grafo las paredes que son físicamente demasiado cortas para una puerta.
-    # Así el MST no intentará elegir una pared de 10px solo porque es la única conexión.
+    # Preferencia de posición del usuario (Default: LEFT)
+    user_pos = config.get('posicion_puertas', 'LEFT') if config else 'LEFT'
+
+    # 1. LIMPIEZA DEL GRAFO 
     for u, v, data in list(G.edges(data=True)):
         wall_idx = data['wall_idx']
         x1, y1, x2, y2, tag = pwalls[wall_idx]
         wall_len = math.hypot(x2 - x1, y2 - y1)
-        
         if wall_len < MIN_WALL_LEN:
             G.remove_edge(u, v)
-    # Verificación de seguridad: ¿Sigue conectado el grafo?
-    # Si no, significa que hay habitaciones a las que es imposible entrar (paredes muy pequeñas)
-    if not nx.is_connected(G):
-        # print("⚠️ Aviso: Algunas habitaciones son inaccesibles físicamente (paredes muy cortas).")
-        # Para evitar crash, calculamos el MST sobre las componentes conectadas más grandes
-        pass
 
-    # 2. CÁLCULO DEL MAXIMUM SPANNING TREE (Topología)
-    # Buscamos el subgrafo que conecta TODOS los nodos con el MAYOR peso total (longitud de paredes)
-    # Esto evita pasillos estrechos y prioriza paredes anchas.
+    if not nx.is_connected(G):
+        pass # Manejo de grafo desconectado (opcional)
+
+    # 2. MST (Esqueleto)
     mst = nx.maximum_spanning_tree(G, weight='weight')
 
-    # Convertimos las aristas del MST en un set de índices de pared para búsqueda rápida
-    walls_with_door_indices = set()
+    # Diccionario para mapear pared -> habitaciones conectadas
+    walls_to_rooms_map = {} 
     for u, v, data in mst.edges(data=True):
-        walls_with_door_indices.add(data['wall_idx'])
+        w_idx = data['wall_idx']
+        walls_to_rooms_map[w_idx] = (u, v) 
 
-    # 3. INSERTAR PUERTAS FÍSICAMENTE (Geometría)
+    # 3. CONSTRUCCIÓN GEOMÉTRICA
     final_walls_list = []
 
     for i, wall in enumerate(pwalls):
-        # Si esta pared no fue elegida por el MST, se queda como muro ciego ('IW')
-        if i not in walls_with_door_indices:
+        # Si la pared no es elegida, es muro ciego
+        if i not in walls_to_rooms_map:
             final_walls_list.append(wall)
             continue
             
-        # --- CORTAR LA PARED E INSERTAR 'ID' ---
+        # --- PREPARACIÓN DE LA PUERTA ---
+        room_u, room_v = walls_to_rooms_map[i]
+        type_u = G.nodes[room_u].get('room_type', -1)
+        type_v = G.nodes[room_v].get('room_type', -1)
+        
+        # Detectamos si es una conexión de balcón
+        is_balcony_connection = (type_u == 8 or type_v == 8)
+        
         x1, y1, x2, y2, tag = wall
-        
-        # Calcular centro geométrico
+        w_len_pixel = math.hypot(x2-x1, y2-y1)
+
+        # A) DEFINIR TAMAÑO Y ESTRATEGIA
+        if is_balcony_connection:
+            # Lógica BALCÓN: Grande y Centrada (Siempre)
+            target_width = BALCONY_DOOR_SIZE
+            placement_mode = 'CENTER'
+        else:
+            # Lógica NORMAL: Estándar y POSICIÓN CONFIGURABLE
+            target_width = STANDARD_DOOR_SIZE
+            placement_mode = user_pos # 'LEFT', 'CENTER', o 'RIGHT'
+
+        # Seguridad: Si la pared es muy pequeña, forzamos tamaño estándar
+        # para evitar errores geométricos, aunque sea un balcón.
+        if w_len_pixel < (target_width + 4):
+            target_width = STANDARD_DOOR_SIZE
+            # Si no cabe la grande, quizás convenga centrar la pequeña
+            # pero mantendremos la lógica pedida o fallback a centro si es muy chica.
+
+        # B) CÁLCULO DE COORDENADAS
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        half_door = DOOR_SIZE_PX / 2
         
-        # Determinar orientación
         if abs(x1 - x2) > abs(y1 - y2): 
-            # --- HORIZONTAL (varía X) ---
-            orientation = 'H'
+            # --- HORIZONTAL ---
             wx_min, wx_max = min(x1, x2), max(x1, x2)
             fixed_y = y1
             
-            # Posición ideal: Centro
-            d_start = cx - half_door
-            d_end   = cx + half_door
+            # --- AQUÍ APLICAMOS LA LÓGICA DE POSICIÓN ---
+            if placement_mode == 'CENTER':
+                d_start = cx - (target_width / 2)
+            elif placement_mode == 'RIGHT':
+                d_start = wx_max - target_width - CORNER_MARGIN_PX
+            else: # 'LEFT'
+                d_start = wx_min + CORNER_MARGIN_PX
             
-            # Corrección de Márgenes (Offset inteligente)
-            # Si choca con la izquierda...
+            d_end = d_start + target_width
+            
+            # --- CORRECCIONES DE LÍMITES (CLAMPING) ---
+            # Si al esquinar nos salimos (o si centramos mal), ajustamos:
+            
+            # 1. No salirse por la izquierda
             if d_start < (wx_min + CORNER_MARGIN_PX):
                 d_start = wx_min + CORNER_MARGIN_PX
-                d_end = d_start + DOOR_SIZE_PX
+                d_end = d_start + target_width
             
-            # Si choca con la derecha...
+            # 2. No salirse por la derecha
             if d_end > (wx_max - CORNER_MARGIN_PX):
                 d_end = wx_max - CORNER_MARGIN_PX
-                d_start = d_end - DOOR_SIZE_PX
+                d_start = d_end - target_width
+                # Si tras empujar hacia atrás nos salimos por la izq, la pared es demasiado corta.
+                # Aseguramos el mínimo:
+                d_start = max(wx_min, d_start)
 
-            # Clamping final (por si la pared es justa justa)
-            d_start = max(wx_min, d_start)
-            d_end = min(wx_max, d_end)
-
-            # Generar los 3 tramos
-            # 1. Muro Izquierdo
+            # --- GENERAR SEGMENTOS ---
+            # Trozo Izquierdo
             if (d_start - wx_min) > 1:
                 final_walls_list.append((int(wx_min), int(fixed_y), int(d_start), int(fixed_y), 'IW'))
             
-            # 2. La Puerta
+            # La Puerta
             final_walls_list.append((int(d_start), int(fixed_y), int(d_end), int(fixed_y), 'ID'))
             
-            # 3. Muro Derecho
+            # Trozo Derecho
             if (wx_max - d_end) > 1:
                 final_walls_list.append((int(d_end), int(fixed_y), int(wx_max), int(fixed_y), 'IW'))
 
         else:
-            # --- VERTICAL (varía Y) ---
-            orientation = 'V'
+            # --- VERTICAL ---
             wy_min, wy_max = min(y1, y2), max(y1, y2)
             fixed_x = x1
             
-            d_start = cy - half_door
-            d_end   = cy + half_door
+            # --- AQUÍ APLICAMOS LA LÓGICA DE POSICIÓN ---
+            if placement_mode == 'CENTER':
+                d_start = cy - (target_width / 2)
+            elif placement_mode == 'RIGHT':
+                d_start = wy_max - target_width - CORNER_MARGIN_PX
+            else: # 'LEFT' ('TOP' en vertical)
+                d_start = wy_min + CORNER_MARGIN_PX
+                
+            d_end = d_start + target_width
             
-            # Corrección de Márgenes
+            # --- CORRECCIONES DE LÍMITES ---
             if d_start < (wy_min + CORNER_MARGIN_PX):
                 d_start = wy_min + CORNER_MARGIN_PX
-                d_end = d_start + DOOR_SIZE_PX
+                d_end = d_start + target_width
             
             if d_end > (wy_max - CORNER_MARGIN_PX):
                 d_end = wy_max - CORNER_MARGIN_PX
-                d_start = d_end - DOOR_SIZE_PX
-                
-            d_start = max(wy_min, d_start)
-            d_end = min(wy_max, d_end)
+                d_start = d_end - target_width
+                d_start = max(wy_min, d_start)
 
-            # Generar los 3 tramos
-            # 1. Muro Arriba
+            # --- GENERAR SEGMENTOS ---
             if (d_start - wy_min) > 1:
                 final_walls_list.append((int(fixed_x), int(wy_min), int(fixed_x), int(d_start), 'IW'))
                 
-            # 2. La Puerta
             final_walls_list.append((int(fixed_x), int(d_start), int(fixed_x), int(d_end), 'ID'))
             
-            # 3. Muro Abajo
             if (wy_max - d_end) > 1:
                 final_walls_list.append((int(fixed_x), int(d_end), int(fixed_x), int(wy_max), 'IW'))
 
     return final_walls_list
 
-
 def get_architectural_priority(type_A, type_B, wall_length):
     """
-    Calcula el PESO de una conexión. El MST buscará MAXIMIZAR este valor.
+    EL CEREBRO DE DISEÑO:
+    Calcula una puntuación de "Deseabilidad" para una conexión.
+    Cuanto más alto el número, más ganas tiene el algoritmo de poner una puerta ahí.
     
-    Fórmula: Longitud_Pared * Multiplicador_Semántico
-    
-    Esto asegura que una pared pequeña que conecta el Salón con la Cocina (x15)
-    tenga más peso que un ventanal enorme que conecta el Dormitorio con el Balcón (x0.001).
+    Fórmula: Longitud de la pared * Factor de conveniencia.
     """
     
-    # Índices basados en tu lista (Canal 2)
-    # 0:Living, 1:Master, 2:Kitchen, 3:Bath, 4:Dining, 5:Child, 
-    # 6:Second, 7:Guest, 8:Balcony, 9:Entrance, 10:Storage, 11:BackGrd, 12:ExtWall
+    # Mapa de IDs para referencia:
+    # 0:Salón, 1:Principal, 2:Cocina, 3:Baño, 4:Comedor, 5:Niño, 
+    # 6:Segunda, 7:Invitados, 8:Balcón, 9:Entrada, 10:Trastero...
     
     multiplier = 1.0
     
-    # Grupos lógicos
+    # Agrupamos tipos de habitación por lógica
     bedrooms = {1, 5, 6, 7}
     service = {2, 3, 10}
     public = {0, 4, 9}
     
-    # --- REGLA 0: FILTRO DE SEGURIDAD ---
-    # Si alguno es fondo o pared exterior (por error), prioridad nula.
+    # --- REGLA 0: SEGURIDAD ---
+    # Nunca poner puertas hacia el vacío o paredes exteriores incorrectas.
     if 11 in (type_A, type_B) or 12 in (type_A, type_B):
         return 0.0
 
-    # --- REGLA 1: EL BALCÓN ES UN "CUL-DE-SAC" ---
-    # Solo queremos conectar con el balcón si NO HAY OTRA SALIDA.
-    # Prioridad infinitesimal.
+    # --- REGLA 1: EL BALCÓN (Callejón sin salida) ---
+    # Solo conectamos con el balcón si no hay otra opción. Prioridad muy baja.
     if 8 in (type_A, type_B):
         return 0.0001 * wall_length 
 
-    # --- REGLA 2: LA ENTRADA (Entrance - 9) ---
-    # La entrada debe conectar fuertemente con las zonas públicas.
+    # --- REGLA 2: LA ENTRADA (9) ---
+    # La entrada DEBE conectar con el Salón o zonas comunes. Prioridad máxima.
     if 9 in (type_A, type_B):
-        if 0 in (type_A, type_B): return wall_length * 100.0 # Entrance -> Living (Prioridad Absoluta)
-        if 4 in (type_A, type_B): return wall_length * 80.0  # Entrance -> Dining
-        return wall_length * 50.0 # Entrance -> Pasillo/Otros
+        if 0 in (type_A, type_B): return wall_length * 100.0 # Entrada -> Salón (¡Obligatorio si se puede!)
+        if 4 in (type_A, type_B): return wall_length * 80.0  # Entrada -> Comedor
+        return wall_length * 50.0 # Entrada -> Pasillo u otros
 
-    # --- REGLA 3: EL SALÓN (Living - 0) ES EL HUB ---
-    # El salón distribuye a casi todo.
+    # --- REGLA 3: EL SALÓN (0) ES EL REY ---
+    # El salón es el distribuidor central de la casa.
     elif 0 in (type_A, type_B):
-        if type_A in bedrooms or type_B in bedrooms: multiplier = 20.0
-        elif 2 in (type_A, type_B): multiplier = 15.0 # Cocina
-        elif 4 in (type_A, type_B): multiplier = 15.0 # Comedor
+        if type_A in bedrooms or type_B in bedrooms: multiplier = 20.0 # Salón -> Habitaciones
+        elif 2 in (type_A, type_B): multiplier = 15.0 # Salón -> Cocina
+        elif 4 in (type_A, type_B): multiplier = 15.0 # Salón -> Comedor
         else: multiplier = 10.0
 
-    # --- REGLA 4: SUITE (Master - 1 <-> Bath - 3) ---
-    # Conexión deseable.
+    # --- REGLA 4: SUITE PRIVADA (Habitación Principal -> Baño) ---
+    # Es muy deseable tener el baño conectado a la habitación principal.
     elif (type_A == 1 and type_B == 3) or (type_A == 3 and type_B == 1):
         multiplier = 15.0 
 
-    # --- REGLA 5: ZONA DE DÍA (Kitchen - 2 <-> Dining - 4) ---
+    # --- REGLA 5: ZONA DE DÍA (Cocina -> Comedor) ---
+    # Para llevar la comida fácilmente.
     elif (type_A == 2 and type_B == 4) or (type_A == 4 and type_B == 2):
         multiplier = 12.0
         
-    # --- REGLA 6: PENALIZACIONES (OLORES/RUIDO) ---
-    # Evitar conectar Cocina directamente a Dormitorio si es posible ir por otro lado.
+    # --- REGLA 6: PENALIZACIONES (Olores y Privacidad) ---
+    # ¿Cocina directa a Dormitorio? Mala idea por olores y ruidos. Bajamos prioridad.
     elif 2 in (type_A, type_B) and (type_A in bedrooms or type_B in bedrooms):
         multiplier = 0.5 
     
-    # Evitar conectar Baño a Cocina
+    # ¿Baño directo a Cocina? Antihigiénico. Evitar si es posible.
     elif 2 in (type_A, type_B) and 3 in (type_A, type_B):
         multiplier = 0.2
 
     return wall_length * multiplier
 
-import networkx as nx
-import math
