@@ -169,8 +169,12 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
             if id == 'ID':
                 arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
                                         listNilColors[idxNilColorInsideDoor], 3)
-    
-    if lPerimeter is not None:
+            if id == 'ID_A':
+                arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
+                                        listNilColors[idxNilColorAux1], 3)
+            if id == 'ID_B':
+                arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
+                                        listNilColors[idxNilColorInsideDoor], 3)
 
                 # ---------------------------------------------------------
         # BLOQUE DE EJECUCIÓN Y PINTADO (Run Script)

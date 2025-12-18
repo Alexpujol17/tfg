@@ -73,15 +73,21 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
     # ==========================================
     # 2. CREAR LOS PUNTOS DEL GRAFO (NODOS)
     # ==========================================
-    G = nx.Graph()
+    G = nx.Graph()  # Mantenemos grafo no dirigido, pero guardamos direccion en edges
     valid_rooms = np.unique(room_map)
     # Quitamos el -1 (que es espacio vacío)
     valid_rooms = valid_rooms[valid_rooms != -1]
     G.add_nodes_from(valid_rooms)
 
+    # Calcular área de cada habitación (en píxeles)
+    room_areas = {}
+    for uid in valid_rooms:
+        room_areas[uid] = np.sum(room_map == uid)
+    
     for uid in valid_rooms:
         r_type = uid_to_room_type.get(uid, -1)
         G.nodes[uid]['room_type'] = r_type
+        G.nodes[uid]['room_area'] = room_areas.get(uid, 0)
 
     # ==========================================
     # 3. ANALIZAR LAS PAREDES (ENLACES)
@@ -131,19 +137,49 @@ def build_adjacency_graph(gParam, lConnexComponents, pwalls, lPerimeter):
             type_A = uid_to_room_type.get(room_A, -1)
             type_B = uid_to_room_type.get(room_B, -1)
             
+            # --- DETERMINAR DIRECCIÓN DE APERTURA ---
+            # La puerta abre HACIA (swing_into) la habitación destino
+            # Reglas de prioridad:
+            #   1. Habitaciones privadas (dormitorios, baños) - abre hacia ellas
+            #   2. Si ninguna es privada o ambas lo son - abre hacia la más grande
+            private_rooms = {1, 3, 5, 6, 7}  # 1:Principal, 3:Baño, 5:Niño, 6:Segunda, 7:Invitados
+            
+            A_is_private = type_A in private_rooms
+            B_is_private = type_B in private_rooms
+            
+            area_A = room_areas.get(room_A, 0)
+            area_B = room_areas.get(room_B, 0)
+            
+            if A_is_private and not B_is_private:
+                swing_into = room_A  # Abre hacia habitación privada A
+            elif B_is_private and not A_is_private:
+                swing_into = room_B  # Abre hacia habitación privada B
+            else:
+                # Ambas privadas o ninguna: hacia la más grande
+                swing_into = room_A if area_A >= area_B else room_B
+            
             # --- PUNTUACIÓN DE LA CONEXIÓN ---
             # Calculamos cuán buena idea es poner una puerta aquí.
             priority_score = get_architectural_priority(type_A, type_B, wall_len)
             
-            # Añadimos la conexión al Grafo.
+            # Añadimos la conexión al Grafo con info de dirección.
             # Si ya existía conexión (otra pared entre las mismas habitaciones),
             # nos quedamos solo con la que tenga mejor puntuación.
+            edge_data = {
+                'wall_idx': w_idx, 
+                'weight': priority_score, 
+                'length': wall_len,
+                'swing_into': swing_into,  # NUEVO: hacia qué habitación abre
+                'room_A': room_A,  # NUEVO: referencia para saber lados
+                'room_B': room_B
+            }
+            
             if G.has_edge(room_A, room_B):
                 prev_score = G[room_A][room_B]['weight']
                 if priority_score > prev_score:
-                    G.add_edge(room_A, room_B, wall_idx=w_idx, weight=priority_score, length=wall_len)
+                    G.add_edge(room_A, room_B, **edge_data)
             else:
-                G.add_edge(room_A, room_B, wall_idx=w_idx, weight=priority_score, length=wall_len)
+                G.add_edge(room_A, room_B, **edge_data)
 
     # ==========================================
     # 4. BUSCAR LA ENTRADA PRINCIPAL (Start Node)
@@ -217,11 +253,20 @@ def place_interior_doors_mst(gParam, pwalls, G, start_room_id, config=None):
     # 2. MST (Esqueleto)
     mst = nx.maximum_spanning_tree(G, weight='weight')
 
-    # Diccionario para mapear pared -> habitaciones conectadas
+    # Diccionario para mapear pared -> (habitaciones, info de apertura)
     walls_to_rooms_map = {} 
     for u, v, data in mst.edges(data=True):
         w_idx = data['wall_idx']
-        walls_to_rooms_map[w_idx] = (u, v) 
+        swing_into = data.get('swing_into', u)  # Default: abre hacia u
+        room_A = data.get('room_A', u)
+        room_B = data.get('room_B', v)
+        walls_to_rooms_map[w_idx] = {
+            'room_u': u, 
+            'room_v': v,
+            'swing_into': swing_into,
+            'room_A': room_A,
+            'room_B': room_B
+        } 
 
     # 3. CONSTRUCCIÓN GEOMÉTRICA
     final_walls_list = []
@@ -233,15 +278,36 @@ def place_interior_doors_mst(gParam, pwalls, G, start_room_id, config=None):
             continue
             
         # --- PREPARACIÓN DE LA PUERTA ---
-        room_u, room_v = walls_to_rooms_map[i]
+        edge_info = walls_to_rooms_map[i]
+        room_u = edge_info['room_u']
+        room_v = edge_info['room_v']
+        swing_into = edge_info['swing_into']
+        room_A = edge_info['room_A']
+        room_B = edge_info['room_B']
+        
         type_u = G.nodes[room_u].get('room_type', -1)
         type_v = G.nodes[room_v].get('room_type', -1)
         
-        # Detectamos si es una conexión de balcón
+        # Detectamos si es una conexión de balcón (puerta corredera, sin arco)
         is_balcony_connection = (type_u == 8 or type_v == 8)
         
         x1, y1, x2, y2, tag = wall
         w_len_pixel = math.hypot(x2-x1, y2-y1)
+        is_horiz = abs(x1 - x2) > abs(y1 - y2)
+        
+        # --- DETERMINAR TAG DE PUERTA ---
+        # Para paredes horizontales: lado A está ARRIBA (y menor), lado B está ABAJO (y mayor)
+        # Para paredes verticales: lado A está IZQUIERDA (x menor), lado B está DERECHA (x mayor)
+        # El tag indica hacia qué LADO abre la puerta (donde está el arco de 90°)
+        if is_balcony_connection:
+            door_tag = 'ID'  # Balcón: sin dirección (corredera)
+        else:
+            # Determinamos si swing_into corresponde a room_A o room_B
+            # room_A está en side A (arriba/izquierda), room_B en side B (abajo/derecha)
+            if swing_into == room_A:
+                door_tag = 'ID_A'  # Abre hacia lado A (arriba/izquierda)
+            else:
+                door_tag = 'ID_B'  # Abre hacia lado B (abajo/derecha)
 
         # A) DEFINIR TAMAÑO Y ESTRATEGIA
         if is_balcony_connection:
@@ -299,8 +365,8 @@ def place_interior_doors_mst(gParam, pwalls, G, start_room_id, config=None):
             if (d_start - wx_min) > 1:
                 final_walls_list.append((int(wx_min), int(fixed_y), int(d_start), int(fixed_y), 'IW'))
             
-            # La Puerta
-            final_walls_list.append((int(d_start), int(fixed_y), int(d_end), int(fixed_y), 'ID'))
+            # La Puerta (con dirección de apertura)
+            final_walls_list.append((int(d_start), int(fixed_y), int(d_end), int(fixed_y), door_tag))
             
             # Trozo Derecho
             if (wx_max - d_end) > 1:
@@ -335,7 +401,7 @@ def place_interior_doors_mst(gParam, pwalls, G, start_room_id, config=None):
             if (d_start - wy_min) > 1:
                 final_walls_list.append((int(fixed_x), int(wy_min), int(fixed_x), int(d_start), 'IW'))
                 
-            final_walls_list.append((int(fixed_x), int(d_start), int(fixed_x), int(d_end), 'ID'))
+            final_walls_list.append((int(fixed_x), int(d_start), int(fixed_x), int(d_end), door_tag))
             
             if (wy_max - d_end) > 1:
                 final_walls_list.append((int(fixed_x), int(d_end), int(fixed_x), int(wy_max), 'IW'))

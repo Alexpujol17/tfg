@@ -53,7 +53,7 @@ def parse_room_geometry(gParam, room_pixels, lPerimeter, pwalls):
         for x1, y1, x2, y2, tag in pwalls:
             draw_line(masks["all_obstacles"], x1, y1, x2, y2, thickness=1)
             
-            if tag == 'ID':
+            if tag == 'ID' or tag == 'ID_A' or tag == 'ID_B':
                 draw_line(masks["doors"], x1, y1, x2, y2, thickness=2)
             elif tag == 'WN':
                 draw_line(masks["windows"], x1, y1, x2, y2, thickness=2)
@@ -129,6 +129,155 @@ def get_forbidden_mask(gParam, masks, config, include_walls=True, exclude_window
             
     return forbidden
 
+
+def get_door_swing_forbidden(gParam, masks, pwalls, room_mask):
+    """
+    Calcula zonas prohibidas por apertura de puertas con dirección.
+    
+    - ID_A: Puerta abre hacia lado A (arriba para horizontal, izquierda para vertical)
+            → Arco 90° en lado A, margen 0.5m en lado B
+    - ID_B: Puerta abre hacia lado B (abajo para horizontal, derecha para vertical)
+            → Arco 90° en lado B, margen 0.5m en lado A
+    - ID: Puerta sin dirección (balcón) → margen circular estándar
+    
+    Args:
+        gParam: Parámetros globales con nPixelsPerMeter
+        masks: Diccionario de máscaras de la habitación
+        pwalls: Lista de segmentos de pared (x1, y1, x2, y2, tag)
+        room_mask: Máscara booleana de la habitación actual
+    
+    Returns:
+        forbidden: Máscara booleana de zonas bloqueadas por puertas
+    """
+    import math
+    
+    H, W = gParam["height"], gParam["width"]
+    px_per_m = gParam["nPixelsPerMeter"]
+    
+    forbidden = np.zeros((H, W), dtype=bool)
+    
+    # Parámetros
+    DOOR_RADIUS_PX = 9  # ~0.8m para arco de 90°
+    MARGIN_PX = int(0.5 * px_per_m)  # 0.5m para lado opuesto
+    
+    if not pwalls:
+        return forbidden
+    
+    for segment in pwalls:
+        x1, y1, x2, y2, tag = segment
+        
+        # Solo procesar puertas interiores con dirección
+        if tag not in ['ID_A', 'ID_B', 'ID']:
+            continue
+        
+        # Centro de la puerta
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        door_len = math.hypot(x2 - x1, y2 - y1)
+        is_horiz = abs(x1 - x2) > abs(y1 - y2)
+        
+        # Determinar punto de bisagra (LEFT del segmento)
+        # Para horizontal: bisagra en x_min
+        # Para vertical: bisagra en y_min
+        if is_horiz:
+            hinge_x = min(x1, x2)
+            hinge_y = y1
+        else:
+            hinge_x = x1
+            hinge_y = min(y1, y2)
+        
+        # Crear máscara temporal para esta puerta
+        door_forbidden = np.zeros((H, W), dtype=bool)
+        
+        if tag == 'ID':
+            # Puerta sin dirección (balcón): círculo completo pequeño
+            for dx in range(-MARGIN_PX, MARGIN_PX + 1):
+                for dy in range(-MARGIN_PX, MARGIN_PX + 1):
+                    if dx*dx + dy*dy <= MARGIN_PX * MARGIN_PX:
+                        px, py = int(cx + dx), int(cy + dy)
+                        if 0 <= px < W and 0 <= py < H:
+                            door_forbidden[py, px] = True
+                            
+        elif tag == 'ID_A':
+            # Puerta abre hacia lado A (arriba/izquierda)
+            # Arco 90° en lado A
+            for angle_deg in range(0, 91, 5):
+                angle_rad = math.radians(angle_deg)
+                for r in range(1, DOOR_RADIUS_PX + 1):
+                    if is_horiz:
+                        # Horizontal: lado A es ARRIBA (y menor)
+                        # Arco desde bisagra hacia arriba-derecha
+                        px = int(hinge_x + r * math.cos(angle_rad))
+                        py = int(hinge_y - r * math.sin(angle_rad))
+                    else:
+                        # Vertical: lado A es IZQUIERDA (x menor)
+                        # Arco desde bisagra hacia izquierda-abajo
+                        px = int(hinge_x - r * math.sin(angle_rad))
+                        py = int(hinge_y + r * math.cos(angle_rad))
+                    
+                    if 0 <= px < W and 0 <= py < H:
+                        door_forbidden[py, px] = True
+            
+            # Margen rectangular en lado B (abajo/derecha)
+            if is_horiz:
+                # Lado B = ABAJO
+                for dx in range(int(door_len) + 2):
+                    for dy in range(1, MARGIN_PX + 1):
+                        px = int(min(x1, x2) + dx)
+                        py = int(y1 + dy)
+                        if 0 <= px < W and 0 <= py < H:
+                            door_forbidden[py, px] = True
+            else:
+                # Lado B = DERECHA
+                for dy in range(int(door_len) + 2):
+                    for dx in range(1, MARGIN_PX + 1):
+                        px = int(x1 + dx)
+                        py = int(min(y1, y2) + dy)
+                        if 0 <= px < W and 0 <= py < H:
+                            door_forbidden[py, px] = True
+                            
+        elif tag == 'ID_B':
+            # Puerta abre hacia lado B (abajo/derecha)
+            # Arco 90° en lado B
+            for angle_deg in range(0, 91, 5):
+                angle_rad = math.radians(angle_deg)
+                for r in range(1, DOOR_RADIUS_PX + 1):
+                    if is_horiz:
+                        # Horizontal: lado B es ABAJO (y mayor)
+                        # Arco desde bisagra hacia abajo-derecha
+                        px = int(hinge_x + r * math.cos(angle_rad))
+                        py = int(hinge_y + r * math.sin(angle_rad))
+                    else:
+                        # Vertical: lado B es DERECHA (x mayor)
+                        # Arco desde bisagra hacia derecha-abajo
+                        px = int(hinge_x + r * math.sin(angle_rad))
+                        py = int(hinge_y + r * math.cos(angle_rad))
+                    
+                    if 0 <= px < W and 0 <= py < H:
+                        door_forbidden[py, px] = True
+            
+            # Margen rectangular en lado A (arriba/izquierda)
+            if is_horiz:
+                # Lado A = ARRIBA
+                for dx in range(int(door_len) + 2):
+                    for dy in range(1, MARGIN_PX + 1):
+                        px = int(min(x1, x2) + dx)
+                        py = int(y1 - dy)
+                        if 0 <= px < W and 0 <= py < H:
+                            door_forbidden[py, px] = True
+            else:
+                # Lado A = IZQUIERDA
+                for dy in range(int(door_len) + 2):
+                    for dx in range(1, MARGIN_PX + 1):
+                        px = int(x1 - dx)
+                        py = int(min(y1, y2) + dy)
+                        if 0 <= px < W and 0 <= py < H:
+                            door_forbidden[py, px] = True
+        
+        # Solo añadir la zona si está dentro de la habitación actual
+        forbidden |= (door_forbidden & room_mask)
+    
+    return forbidden
+
 # ==========================================
 # 2. SISTEMA DE VALIDACIÓN (EL ÁRBITRO)
 # ==========================================
@@ -196,7 +345,12 @@ def check_placement(masks, forbidden, x1, y1, x2, y2, allow_windows=False, retur
     rect_floor = masks["room_floor"][sl]
     if rect_floor.size == 0:
         return (False, "floor") if return_reason else False
-    if np.sum(rect_floor) < rect_floor.size:
+    
+    # MEJORA: Tolerancia del 95% en lugar del 100% estricto
+    # Esto permite que el mueble "pise" 1 o 2 píxeles de pared/margen
+    # lo cual es crucial para habitaciones al borde de la imagen o con ruido.
+    floor_coverage = np.sum(rect_floor) / rect_floor.size
+    if floor_coverage < 0.95:
         return (False, "floor") if return_reason else False
         
     return (True, "success") if return_reason else True
@@ -264,19 +418,61 @@ def try_place_simple(masks, forbidden, points, size_m, px_per_m, allow_windows=F
         for p in proposals:
             px1, px2, py1, py2, pori = p
             
+            # --- CRÍTICO: Clamping de coordenadas ---
+            # Si x1 < 0, Python interpreta "desde el final del array" (wrapping).
+            # Para imágenes, esto es FATAL (mira el lado opuesto de la casa).
+            # Hay que asegurar que estén dentro de (0, H) y (0, W).
+            px1 = max(0, min(H, px1))
+            px2 = max(0, min(H, px2))
+            py1 = max(0, min(W, py1))
+            py2 = max(0, min(W, py2))
+            
+            # Si tras el clamp el mueble tiene tamaño 0 o negativo, descartar
+            if (px2 <= px1) or (py2 <= py1):
+                continue
+            
             # Check básico de colisiones
             if check_placement(masks, forbidden, px1, py1, px2, py2, allow_windows):
                 # Check adicional: ¿Realmente toca pared por el lado "BACK"?
                 touches = False
                 margin = 3
+                
+                # Para el check de touches también hay que usar coords CLAMPED o protegidas
                 if pori == "BACK_UP":
-                    touches = np.any(masks["walls"][max(0, px1-margin):px1+1, py1:py2])
+                    # Si está en el borde 0, asumimos que toca pared (límite del mapa)
+                    if px1 == 0:
+                        touches = True
+                    else:
+                        chk_x1 = max(0, px1 - margin)
+                        chk_x2 = min(H, px1 + 1)
+                        touches = np.any(masks["walls"][chk_x1:chk_x2, py1:py2])
+                    
                 elif pori == "BACK_DOWN":
-                    touches = np.any(masks["walls"][px2:min(H, px2+margin), py1:py2])
+                    # Si está en el borde H, asumimos pared
+                    if px2 == H:
+                        touches = True
+                    else:
+                        chk_x1 = max(0, px2)
+                        chk_x2 = min(H, px2 + margin)
+                        touches = np.any(masks["walls"][chk_x1:chk_x2, py1:py2])
+                    
                 elif pori == "BACK_LEFT":
-                    touches = np.any(masks["walls"][px1:px2, max(0, py1-margin):py1+1])
+                    # Si está en borde izquierdo 0
+                    if py1 == 0:
+                        touches = True
+                    else:
+                        chk_y1 = max(0, py1 - margin)
+                        chk_y2 = min(W, py1 + 1)
+                        touches = np.any(masks["walls"][px1:px2, chk_y1:chk_y2])
+                    
                 elif pori == "BACK_RIGHT":
-                    touches = np.any(masks["walls"][px1:px2, py2:min(W, py2+margin)])
+                    # Si está en borde derecho W
+                    if py2 == W:
+                        touches = True
+                    else:
+                        chk_y1 = max(0, py2)
+                        chk_y2 = min(W, py2 + margin)
+                        touches = np.any(masks["walls"][px1:px2, chk_y1:chk_y2])
                 
                 if touches:
                     candidates.append({
@@ -584,8 +780,14 @@ def solve_master_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     wardrobe_sizes = [(1.50, 0.60), (1.20, 0.60), (1.00, 0.55), (0.80, 0.50)]
     
     # Zona prohibida (Puertas)
-    config = {"door_radius": 0.70, "window_clearance": 0.0}
+    config = {"door_radius": 0.00, "window_clearance": 0.0}
     forbidden = get_forbidden_mask(gParam, masks, config, include_walls=True)
+    
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
+    
     current_forbidden = forbidden.copy()
     
     items = []
@@ -606,87 +808,113 @@ def solve_master_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
         if debug: print("   [DEBUG] MasterBedroom: No se encontraron puntos de pared.")
         return None
 
-    # 1. COLOCAR CAMA DOBLE (Permite ventana, cualquier orientación)
-    bed_placed = False
-    config_used = "Unknown"
+    # --- BÚSQUEDA EXHAUSTIVA ---
+    best_solution = None
+    best_score = -1.0
     
+    # Bucle 1: Configuraciones de Cama (Ordenado por preferencia de tamaño)
     for bed_cfg in bed_configs:
         bed_size = bed_cfg["bed_size"]
+        bed_w, bed_l = bed_size
+        bed_area = bed_w * bed_l
         
-        # Usamos try_place_simple: solo chequea que toque pared y quepa
-        cands = try_place_simple(masks, current_forbidden, wall_points, bed_size, px_per_m, 
-                                  allow_windows=True, debug=False)
-        if cands:
-            best = cands[0]
-            items.append({
-                "type": "bed_double",
-                "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                "orientation": best["orientation"],
-                "config": f"Cama {bed_size}"
-            })
+        # Obtener TODOS los candidatos posibles para esta cama
+        bed_candidates = try_place_simple(masks, current_forbidden, wall_points, bed_size, px_per_m, 
+                                          allow_windows=True, debug=True)
+        
+        if not bed_candidates: continue
             
-            # Actualizar forbidden con margen
-            cmargin = int(0.40 * px_per_m)  # 40cm margen
-            gx1, gx2 = max(0, best["x1"]-cmargin), min(masks["all_obstacles"].shape[0], best["x2"]+cmargin)
-            gy1, gy2 = max(0, best["y1"]-cmargin), min(masks["all_obstacles"].shape[1], best["y2"]+cmargin)
-            current_forbidden[gx1:gx2, gy1:gy2] = True
+        # Bucle 2: Iterar sobre CADA posición candidata para la cama
+        for bed_cand in bed_candidates:
             
-            if debug:
-                print(f"   [DEBUG] MasterBedroom: Cama colocada ({bed_size}) en {best['orientation']}")
-            bed_placed = True
-            config_used = bed_cfg["name"]
+            # Puntuación base: Área de la cama
+            # (Multiplicamos por 10 para darle peso frente a decimales pequeños)
+            current_score = (bed_area * 10.0)
+            
+            # Crear Forbidden Temporal para probar armarios
+            # (Añadimos la cama colocada + margen de paso)
+            temp_forbidden = current_forbidden.copy()
+            cmargin = int(0.40 * px_per_m) # 10cm margen (mínimo para paso/apertura)
+            bx1, bx2 = max(0, bed_cand["x1"]-cmargin), min(masks["all_obstacles"].shape[0], bed_cand["x2"]+cmargin)
+            by1, by2 = max(0, bed_cand["y1"]-cmargin), min(masks["all_obstacles"].shape[1], bed_cand["y2"]+cmargin)
+            temp_forbidden[bx1:bx2, by1:by2] = True
+            
+            wardrobe_found = None
+            
+            # Bucle 3: Configuraciones de Armario
+            for w_size in wardrobe_sizes:
+                w_w, w_d = w_size
+                w_area = w_w * w_d
+                
+                # Intentar colocar Armario (Strict primero, luego Simple)
+                w_cands = try_place_strict(masks, temp_forbidden, wall_points, w_size, px_per_m,
+                                           gaps=[0, 1], allow_windows=False, debug=True)
+                
+                if not w_cands:
+                    w_cands = try_place_simple(masks, temp_forbidden, wall_points, w_size, px_per_m,
+                                               allow_windows=False, debug=True)
+                
+                if w_cands:
+                    # Encontrado sitio para armario
+                    w_cand = w_cands[0] # El mejor de este tamaño
+                    wardrobe_found = {**w_cand, "size": w_size, "area": w_area}
+                    
+                    # BONUS: Si tenemos armario, sumamos MUCHO puntaje.
+                    # Esto asegura que (Cama + Armario) > (Cama Grande Sola)
+                    current_score += 2000.0 + (w_area * 5.0)
+                    
+                    # Rompemos el bucle de tamaños de armario:
+                    # Hemos encontrado el armario más grande posible para ESTA posición de cama.
+                    break 
+            
+            # Evaluar si esta solución combinada es la mejor hasta ahora
+            if current_score > best_score:
+                best_score = current_score
+                best_solution = {
+                    "bed": {**bed_cand, "size": bed_size, "config_name": bed_cfg["name"]},
+                    "wardrobe": wardrobe_found # Puede ser None si no cupo ninguno
+                }
+                
+                # OPTIMIZACIÓN: Si encontramos Cama Luxury + Armario Grande, es insuperable.
+                if bed_cfg["name"] == "Luxury" and wardrobe_found and wardrobe_found["size"] == wardrobe_sizes[0]:
+                    break
+        
+        # Si ya hemos encontrado una solución Completa en el tamaño de cama actual,
+        # paramos de buscar en camas más pequeñas.
+        if best_solution and best_solution["wardrobe"] and best_solution["bed"]["config_name"] == bed_cfg["name"]:
             break
-    
-    if not bed_placed:
-        if debug: print("   [DEBUG] MasterBedroom: No se pudo colocar la cama.")
-        return None
 
-    # 2. COLOCAR ARMARIO (NO ventana, lado LARGO paralelo a pared)
-    wardrobe_placed = False
+    # --- Construir Resultado Final ---
+    if not best_solution:
+        if debug: print("   [DEBUG] MasterBedroom: No solution found.")
+        return None
+        
+    items = []
+    # Cama
+    b = best_solution["bed"]
+    items.append({
+        "type": "bed_double",
+        "x1": b["x1"], "x2": b["x2"], "y1": b["y1"], "y2": b["y2"],
+        "orientation": b["orientation"], 
+        "config": f"Cama {b['size']}"
+    })
     
-    # Primero intentamos try_place_strict
-    for wardrobe_size in wardrobe_sizes:
-        cands = try_place_strict(masks, current_forbidden, wall_points, wardrobe_size, px_per_m,
-                                  gaps=[0, 1, 2, 3, 4, 5], allow_windows=False)
-        if cands:
-            best = cands[0]
-            items.append({
-                "type": "wardrobe",
-                "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                "orientation": best["orientation"],
-                "config": f"Armario {wardrobe_size}"
-            })
-            
-            if debug:
-                print(f"   [DEBUG] MasterBedroom: Armario colocado ({wardrobe_size}) en {best['orientation']}")
-            wardrobe_placed = True
-            break
-    
-    # Fallback: try_place_simple si strict falla
-    if not wardrobe_placed:
-        if debug: print("   [DEBUG] MasterBedroom: Strict falló para armario, probando simple...")
-        for wardrobe_size in wardrobe_sizes:
-            cands = try_place_simple(masks, current_forbidden, wall_points, wardrobe_size, px_per_m,
-                                      allow_windows=False, debug=False)
-            if cands:
-                best = cands[0]
-                items.append({
-                    "type": "wardrobe",
-                    "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                    "orientation": best["orientation"],
-                    "config": f"Armario {wardrobe_size} (Simple)"
-                })
-                if debug:
-                    print(f"   [DEBUG] MasterBedroom: Armario (Simple) colocado ({wardrobe_size})")
-                wardrobe_placed = True
-                break
-    
-    if not wardrobe_placed:
-        if debug: print("   [DEBUG] MasterBedroom: No se pudo colocar armario, solo cama.")
+    # Armario (si hubo)
+    w = best_solution["wardrobe"]
+    if w:
+        items.append({
+            "type": "wardrobe",
+            "x1": w["x1"], "x2": w["x2"], "y1": w["y1"], "y2": w["y2"],
+            "orientation": w["orientation"],
+            "config": f"Armario {w['size']}"
+        })
+
+    is_complete = (w is not None)
+    config_name = b["config_name"] + (" (Completo)" if is_complete else " (Solo Cama)")
     
     return {
-        "success": wardrobe_placed,  # success=True solo si tenemos ambos
-        "config_level": config_used + (" (Completo)" if wardrobe_placed else " (Solo Cama)"),
+        "success": is_complete,
+        "config_level": config_name,
         "items": items
     }
 
@@ -749,8 +977,14 @@ def solve_dining_room(gParam, room_pixels, lPerimeter, pwalls, debug=False):
         print(f"   [DEBUG] Dining Room: Área={room_area_m2:.2f}m², Centroide=({centroid_x}, {centroid_y}), MejorCentro=({best_center_x}, {best_center_y}), DistMax={max_dist_px/px_per_m:.2f}m")
     
     # Zona prohibida mínima (solo puertas)
-    config_minimal = {"door_radius": 0.50, "window_clearance": 0.0}
+    config_minimal = {"door_radius": 0.00, "window_clearance": 0.0}
     forbidden = get_forbidden_mask(gParam, masks, config_minimal, include_walls=False)
+    
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    # Para el comedor, es importante no poner mesas donde abre la puerta
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
     
     def try_place_table(cx, cy, cfg, debug_table=False):
         """Intenta colocar mesa centrada en (cx, cy)"""
@@ -861,6 +1095,11 @@ def solve_kitchen(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     
     config = {"door_radius": door_r, "window_clearance": 0.0}
     forbidden = get_forbidden_mask(gParam, masks, config, include_walls=True)
+
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
     
     items = []
     current_forbidden = forbidden.copy()
@@ -1150,9 +1389,14 @@ def solve_bathroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     sink_sizes = [(0.80, 0.50), (0.60, 0.45)]
     
     # Zona prohibida (Puertas)
-    config = {"door_radius": 0.50, "window_clearance": 0.0}
+    config = {"door_radius": 0.0, "window_clearance": 0.0}
     
     forbidden = get_forbidden_mask(gParam, masks, config, include_walls=True)
+    
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
     current_forbidden = forbidden.copy()
     
     items = []
@@ -1258,10 +1502,11 @@ def solve_single_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     """
     Coloca muebles en dormitorio individual: Cama Individual + Armario.
     
-    Estrategia:
-    - Búsqueda por capas (layered) desde la pared.
-    - Cama individual puede estar bajo ventana.
-    - Armario NO puede estar bajo ventana (lado LARGO pegado a pared).
+    REFACTORIZADO: Usa estrategia de optimización (combinatoria) igual que Master Bedroom.
+    Prioriza:
+    1. Cama más grande posible (90cm > 80cm > 75cm)
+    2. Armario más grande posible
+    3. Mejor configuración conjunta
     """
     masks = parse_room_geometry(gParam, room_pixels, lPerimeter, pwalls)
     px_per_m = gParam["nPixelsPerMeter"]
@@ -1270,7 +1515,8 @@ def solve_single_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
         return None
         
     if debug:
-        room_area_m2 = len(room_pixels) / (px_per_m ** 2)
+        room_area_px = np.sum(masks["room_original"])
+        room_area_m2 = room_area_px / (px_per_m ** 2)
         print(f"   [DEBUG] SingleBedroom: Área={room_area_m2:.2f}m²")
 
     # Refinamiento máscaras
@@ -1278,16 +1524,27 @@ def solve_single_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     room_context = dilation(masks["room_original"], disk(10))
     masks["doors"] = masks["doors"] & room_context
     
-    # Configuración de Tamaños
-    # Cama Individual: varios tamaños
-    bed_sizes = [(0.90, 1.90), (0.80, 1.80), (0.75, 1.70)]
+    # Definimos niveles de calidad, de mejor a peor
+    # Tamaños de cama: (Ancho, Largo)
+    bed_configs = [
+        {"name": "Standard", "bed_size": (0.90, 1.90)},
+        {"name": "Compact",  "bed_size": (0.80, 1.90)}, # A veces 1.80, pero estandarizado a 1.90
+        {"name": "Small",    "bed_size": (0.80, 1.80)}, 
+        {"name": "Tiny",     "bed_size": (0.75, 1.80)},
+    ]
     
     # Armario: lado largo paralelo a pared (ancho x profundidad)
-    wardrobe_sizes = [(1.20, 0.60), (1.00, 0.55), (0.80, 0.50)]
+    wardrobe_sizes = [(1.20, 0.60), (1.00, 0.60), (1.00, 0.55), (0.80, 0.50), (0.60, 0.45)]
     
     # Zona prohibida (Puertas)
-    config = {"door_radius": 0.60, "window_clearance": 0.0}
+    config = {"door_radius": 0.0, "window_clearance": 0.0}
     forbidden = get_forbidden_mask(gParam, masks, config, include_walls=True)
+    
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
+    
     current_forbidden = forbidden.copy()
     
     items = []
@@ -1308,81 +1565,112 @@ def solve_single_bedroom(gParam, room_pixels, lPerimeter, pwalls, debug=False):
         if debug: print("   [DEBUG] SingleBedroom: No se encontraron puntos de pared.")
         return None
 
-    # 1. COLOCAR CAMA INDIVIDUAL (Permite ventana, NO importa orientación)
-    # Usamos try_place_simple: solo chequea que toque pared y quepa
-    bed_placed = False
-    for bed_size in bed_sizes:
-        cands = try_place_simple(masks, current_forbidden, wall_points, bed_size, px_per_m, 
-                                  allow_windows=True, debug=False)
-        if cands:
-            best = cands[0]
-            items.append({
-                "type": "bed_single",
-                "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                "orientation": best["orientation"],
-                "config": f"Cama {bed_size}"
-            })
-            
-            # Actualizar forbidden con margen pequeño
-            cmargin = int(0.30 * px_per_m)  # 30cm margen
-            gx1, gx2 = max(0, best["x1"]-cmargin), min(masks["all_obstacles"].shape[0], best["x2"]+cmargin)
-            gy1, gy2 = max(0, best["y1"]-cmargin), min(masks["all_obstacles"].shape[1], best["y2"]+cmargin)
-            current_forbidden[gx1:gx2, gy1:gy2] = True
-            
-            if debug:
-                print(f"   [DEBUG] SingleBedroom: Cama colocada ({bed_size}) en {best['orientation']}")
-            bed_placed = True
-            break
+    # --- BÚSQUEDA EXHAUSTIVA ---
+    best_solution = None
+    best_score = -1.0
     
-    if not bed_placed:
-        if debug: print("   [DEBUG] SingleBedroom: No se pudo colocar la cama.")
-        return None
+    # Bucle 1: Configuraciones de Cama
+    for bed_cfg in bed_configs:
+        bed_size = bed_cfg["bed_size"]
+        bed_w, bed_l = bed_size
+        bed_area = bed_w * bed_l
+        
+        # Obtener TODOS los candidatos posibles para esta cama
+        # Cama individual PUEDE ir bajo ventana -> allow_windows=True
+        bed_candidates = try_place_simple(masks, current_forbidden, wall_points, bed_size, px_per_m, 
+                                          allow_windows=True, debug=False)
+        
+        if not bed_candidates: continue
+            
+        # Bucle 2: Iterar sobre CADA posición candidata para la cama
+        for bed_cand in bed_candidates:
+            
+            # Puntuación base: Área de la cama
+            current_score = (bed_area * 10.0)
+            
+            # Crear Forbidden Temporal para probar armarios
+            temp_forbidden = current_forbidden.copy()
+            cmargin = int(0.30 * px_per_m) # 30cm margen
+            bx1, bx2 = max(0, bed_cand["x1"]-cmargin), min(masks["all_obstacles"].shape[0], bed_cand["x2"]+cmargin)
+            by1, by2 = max(0, bed_cand["y1"]-cmargin), min(masks["all_obstacles"].shape[1], bed_cand["y2"]+cmargin)
+            temp_forbidden[bx1:bx2, by1:by2] = True
+            
+            wardrobe_found = None
+            
+            # Bucle 3: Configuraciones de Armario
+            for w_size in wardrobe_sizes:
+                w_w, w_d = w_size
+                w_area = w_w * w_d
+                
+                # Armario: NO bajo ventana (allow_windows=False)
+                # Strict gaps
+                w_cands = try_place_strict(masks, temp_forbidden, wall_points, w_size, px_per_m,
+                                           gaps=[0, 1], allow_windows=False, debug=False)
+                
+                if not w_cands:
+                     # Fallback Simple si strict no va
+                     w_cands = try_place_simple(masks, temp_forbidden, wall_points, w_size, px_per_m,
+                                                allow_windows=False, debug=False)
+                
+                if w_cands:
+                    w_cand = w_cands[0]
+                    wardrobe_found = {**w_cand, "size": w_size, "area": w_area}
+                    
+                    # BONUS por armario
+                    current_score += 2000.0 + (w_area * 5.0)
+                    break # Encontrado el armario más grande posible para esta cama
+            
+            # Evaluar si es la mejor solución
+            if current_score > best_score:
+                best_score = current_score
+                best_solution = {
+                    "bed": {**bed_cand, "size": bed_size, "config_name": bed_cfg["name"]},
+                    "wardrobe": wardrobe_found
+                }
+                
+                # Optimización: Si tenemos Standard + Armario Grande, es ideal.
+                if bed_cfg["name"] == "Standard" and wardrobe_found and wardrobe_found["size"] == wardrobe_sizes[0]:
+                    break
+        
+        # Si ya tenemos solución con armario y esta configuración, probablemente es buena.
+        if best_solution and best_solution["wardrobe"] and best_solution["bed"]["config_name"] == bed_cfg["name"]:
+            break
 
-    # 2. COLOCAR ARMARIO (NO ventana, lado LARGO paralelo a pared)
-    # Usamos try_place_strict para orientación correcta, gaps más amplios
-    wardrobe_placed = False
-    for wardrobe_size in wardrobe_sizes:
-        cands = try_place_strict(masks, current_forbidden, wall_points, wardrobe_size, px_per_m,
-                                  gaps=[0, 1, 2, 3, 4, 5], allow_windows=False)
-        if cands:
-            best = cands[0]
-            items.append({
-                "type": "wardrobe",
-                "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                "orientation": best["orientation"],
-                "config": f"Armario {wardrobe_size}"
-            })
-            
-            if debug:
-                print(f"   [DEBUG] SingleBedroom: Armario colocado ({wardrobe_size}) en {best['orientation']}")
-            wardrobe_placed = True
-            break
+    # --- Construir Resultado Final ---
+    if not best_solution:
+        # Si falló todo, probar solo la cama más pequeña posible sin armario
+        if debug: print("   [DEBUG] SingleBedroom: No solution found with full logic.")
+        return None
+        
+    items = []
+    # Cama
+    b = best_solution["bed"]
+    items.append({
+        "type": "bed_single",
+        "x1": b["x1"], "x2": b["x2"], "y1": b["y1"], "y2": b["y2"],
+        "orientation": b["orientation"], 
+        "config": f"Cama {b['size']}"
+    })
     
-    if not wardrobe_placed:
-        # Fallback: intentar con try_place_simple para el armario si strict falla
-        if debug: print("   [DEBUG] SingleBedroom: Strict falló para armario, probando simple...")
-        for wardrobe_size in wardrobe_sizes:
-            cands = try_place_simple(masks, current_forbidden, wall_points, wardrobe_size, px_per_m,
-                                      allow_windows=False, debug=False)
-            if cands:
-                best = cands[0]
-                items.append({
-                    "type": "wardrobe",
-                    "x1": best["x1"], "x2": best["x2"], "y1": best["y1"], "y2": best["y2"],
-                    "orientation": best["orientation"],
-                    "config": f"Armario {wardrobe_size} (Simple)"
-                })
-                if debug:
-                    print(f"   [DEBUG] SingleBedroom: Armario (Simple) colocado ({wardrobe_size})")
-                wardrobe_placed = True
-                break
+    # Armario
+    w = best_solution["wardrobe"]
+    if w:
+        items.append({
+            "type": "wardrobe",
+            "x1": w["x1"], "x2": w["x2"], "y1": w["y1"], "y2": w["y2"],
+            "orientation": w["orientation"],
+            "config": f"Armario {w['size']}"
+        })
+
+    is_complete = (w is not None)
+    config_name = b["config_name"] + (" (Completo)" if is_complete else " (Solo Cama)")
     
-    if not wardrobe_placed:
-        if debug: print("   [DEBUG] SingleBedroom: No se pudo colocar armario, solo cama.")
+    if debug:
+        print(f"   [DEBUG] SingleBedroom: Selected {config_name}")
     
     return {
         "success": True,
-        "config_level": "Standard Single Bedroom" if wardrobe_placed else "Minimal Single Bedroom",
+        "config_level": config_name,
         "items": items
     }
 
@@ -1433,6 +1721,12 @@ def solve_living_room(gParam, room_pixels, lPerimeter, pwalls, debug=False):
     # Zona prohibida (Puertas)
     config = {"door_radius": 0.50, "window_clearance": 0.0}
     forbidden = get_forbidden_mask(gParam, masks, config, include_walls=True)
+
+    # NUEVO: Añadir zonas prohibidas por apertura de puertas con dirección
+    room_mask = masks["room_original"]
+    forbidden_swing = get_door_swing_forbidden(gParam, masks, pwalls, room_mask)
+    forbidden |= forbidden_swing
+    
     current_forbidden = forbidden.copy()
     
     # Generar puntos de pared por capas
