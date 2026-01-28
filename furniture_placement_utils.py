@@ -359,6 +359,43 @@ def check_placement(masks, forbidden, x1, y1, x2, y2, allow_windows=False, retur
 # 3. BÚSQUEDA Y COLOCACIÓN DE MUEBLES (HELPERS)
 # ==========================================
 
+def get_wall_distance(masks, candidate):
+    """
+    Calcula la distancia mínima del borde trasero del mueble a la pared más cercana.
+    Menor distancia = más pegado a la pared (mejor).
+    """
+    x1, x2, y1, y2 = candidate["x1"], candidate["x2"], candidate["y1"], candidate["y2"]
+    ori = candidate["orientation"]
+    H, W = masks["walls"].shape
+    
+    # Según la orientación, el borde trasero es diferente
+    if ori == "BACK_UP":
+        # Borde trasero es x1 (arriba)
+        for d in range(0, 10):
+            check_x = max(0, x1 - d)
+            if np.any(masks["walls"][check_x:check_x+1, y1:y2]):
+                return d
+    elif ori == "BACK_DOWN":
+        # Borde trasero es x2 (abajo)
+        for d in range(0, 10):
+            check_x = min(H-1, x2 + d)
+            if np.any(masks["walls"][check_x:check_x+1, y1:y2]):
+                return d
+    elif ori == "BACK_LEFT":
+        # Borde trasero es y1 (izquierda)
+        for d in range(0, 10):
+            check_y = max(0, y1 - d)
+            if np.any(masks["walls"][x1:x2, check_y:check_y+1]):
+                return d
+    elif ori == "BACK_RIGHT":
+        # Borde trasero es y2 (derecha)
+        for d in range(0, 10):
+            check_y = min(W-1, y2 + d)
+            if np.any(masks["walls"][x1:x2, check_y:check_y+1]):
+                return d
+    
+    return 10  # Distancia máxima si no encuentra pared
+
 def try_place_simple(masks, forbidden, points, size_m, px_per_m, allow_windows=False, debug=False):
     """
     Prueba a colocar el mueble en las 4 direcciones alrededor de cada punto de pared.
@@ -481,7 +518,8 @@ def try_place_simple(masks, forbidden, points, size_m, px_per_m, allow_windows=F
                         "orientation": pori
                     })
 
-        if len(candidates) >= 100: return candidates
+        if len(candidates) >= 100:
+            return candidates
 
     return candidates
 
@@ -637,7 +675,8 @@ def try_place_strict(masks, forbidden, points, size_m, px_per_m, gaps=[0, 1], al
                     "y1": int(py1), "y2": int(py2), 
                     "orientation": pori
              })
-             if len(candidates) >= 300: return candidates
+             if len(candidates) >= 300:
+                 return candidates
 
     if debug:
         print(f"   [DEBUG] try_place_strict (Global): rejections: no_wall={dbg_no_wall}, no_pts={dbg_no_pts}, no_floor={dbg_no_floor}, check_fail={dbg_check_fail}")

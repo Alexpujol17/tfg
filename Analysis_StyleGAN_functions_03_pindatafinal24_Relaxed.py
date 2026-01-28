@@ -162,7 +162,13 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
     
 
     if pwalls is not None:
-        for (y1, x1, y2, x2, id) in pwalls:
+        import math
+        
+        # Iteramos con índice para poder mirar anterior/siguiente (vecinos)
+        for i in range(len(pwalls)):
+            (y1, x1, y2, x2, id) = pwalls[i]
+            
+            # --- DIBUJO DE LÍNEAS DE PARED/PUERTA ---
             if id == 'IW':
                 arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
                                         listNilColors[idxNilColorInteriorWall], 3)
@@ -172,19 +178,96 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
             if id == 'ID_A':
                 arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
                                         listNilColors[idxNilColorAux1], 3)
+                
+                # --- VISUALIZACIÓN APERTURA (ID_A) ---
+                # 1. Determinar Posición de la Bisagra analizando vecinos
+                # El segmento actual es (y1, x1) -> (y2, x2)  [Tupla es (col, row)]
+                
+                len_before = 0
+                len_after = 0
+                
+                # Chequear Vecino Anterior (i-1)
+                # Debe terminar donde empieza este: Prev(y2, x2) == Curr(y1, x1)
+                if i > 0:
+                    py1, px1, py2, px2, pid = pwalls[i-1]
+                    # Check conectividad (tolerancia 1px)
+                    if abs(py2 - y1) <= 1 and abs(px2 - x1) <= 1 and 'IW' in pid:
+                        len_before = math.hypot(py2-py1, px2-px1)
+                
+                # Chequear Vecino Siguiente (i+1)
+                # Debe empezar donde termina este: Next(y1, x1) == Curr(y2, x2)
+                if i < len(pwalls) - 1:
+                    ny1, nx1, ny2, nx2, nid = pwalls[i+1]
+                    if abs(ny1 - y2) <= 1 and abs(nx1 - x2) <= 1 and 'IW' in nid:
+                        len_after = math.hypot(ny2-ny1, nx2-nx1)
+                
+                # LÓGICA DE BISAGRA:
+                # - Si len_before < len_after: Puerta a la Izquierda -> Bisagra en Start (y1, x1)
+                # - Si len_before > len_after: Puerta a la Derecha -> Bisagra en End (y2, x2)
+                # - Empate: Default Start
+                
+                if len_before > len_after:
+                     # Right Aligned -> Hinge at End
+                     h_x, h_y = x2, y2
+                else:
+                     # Left Aligned or Center -> Hinge at Start (Default)
+                     # NOTA: (x1, y1) suele ser Top/Left en la generación.
+                     h_x, h_y = x1, y1
+                     
+                # Calcular Punto Indicador (ID_A = Arriba/Izquierda)
+                # USUARIO: "El punto tiene que estar en la puerta, no pongas ofset ni nada"
+                # Y AHORA: "se tiene que pintar tan solo un pixel en la puerta, nada mas"
+                
+                color_point = [0, 0, 0]
+                p_x, p_y = h_x, h_y
+
+                # Pintar 1 solo pixel
+                px, py = int(p_x), int(p_y)
+                if 0 <= px < height and 0 <= py < width:
+                     arrImageNilColorsRes[px, py] = color_point
+
+
             if id == 'ID_B':
                 arrImageNilColorsRes = drawLine(arrImageNilColorsRes, x1, y1, x2, y2,
                                         listNilColors[idxNilColorInsideDoor], 3)
+                
+                # --- VISUALIZACIÓN APERTURA (ID_B) ---
+                len_before = 0
+                len_after = 0
+                
+                if i > 0:
+                    py1, px1, py2, px2, pid = pwalls[i-1]
+                    if abs(py2 - y1) <= 1 and abs(px2 - x1) <= 1 and 'IW' in pid:
+                        len_before = math.hypot(py2-py1, px2-px1)
+                
+                if i < len(pwalls) - 1:
+                    ny1, nx1, ny2, nx2, nid = pwalls[i+1]
+                    if abs(ny1 - y2) <= 1 and abs(nx1 - x2) <= 1 and 'IW' in nid:
+                        len_after = math.hypot(ny2-ny1, nx2-nx1)
+                
+                if len_before > len_after:
+                     h_x, h_y = x2, y2
+                else:
+                     h_x, h_y = x1, y1
+                
+                color_point = [0, 0, 0]
+                # PINTAR EN LA PUERTA (SIN OFFSET)
+                p_x, p_y = h_x, h_y
+
+                # Pintar 1 solo pixel
+                px, py = int(p_x), int(p_y)
+                if 0 <= px < height and 0 <= py < width:
+                     arrImageNilColorsRes[px, py] = color_point
 
                 # ---------------------------------------------------------
         # BLOQUE DE EJECUCIÓN Y PINTADO (Run Script)
         # ---------------------------------------------------------
-
+        
         result = solve_master_bedroom(gParam, lConnexComponents[1][2][0], lPerimeter, pwalls, debug=True)
 
         if result: 
             # Entramos aquí si hay ÉXITO TOTAL o ÉXITO PARCIAL (Solo cama)
-            
+                
             if result["success"]:
                 print(f"   [OK] Solución Completa: {result['config_level']}")
             else:
@@ -195,18 +278,18 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
                 # Extraemos coordenadas
                 x1, x2 = item["x1"], item["x2"]
                 y1, y2 = item["y1"], item["y2"]
-                
+                    
                 # Color: Rojo para cama, Verde para armario
                 if "bed" in item["type"]:
                     color = [255, 100, 100] 
                 else:
                     color = [100, 255, 100] 
-                    
+                        
                 # CLAMP: Aseguramos que no se salga de la imagen (Evita errores de índice)
                 H_img, W_img, _ = arrImageNilColorsRes.shape
                 x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                 y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                
+                    
                 # Pintamos
                 arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
 
@@ -219,79 +302,79 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
         # Índice 4 = DiningR (color ocre/magenta según dataset)
         if len(lConnexComponents) > 4 and len(lConnexComponents[4][2]) > 0:
             dining_pixels = lConnexComponents[4][2][0]  # Primera componente conexa del DiningR
-            
+                
             result_dining = solve_dining_room(gParam, dining_pixels, lPerimeter, pwalls, debug=True)
-            
+                
             if result_dining and result_dining["success"]:
                 print(f"   [OK] Dining Room: Mesa {result_dining['config_level']} colocada")
-                
+                    
                 for item in result_dining["items"]:
                     x1, x2 = item["x1"], item["x2"]
                     y1, y2 = item["y1"], item["y2"]
-                    
+                        
                     # Color azul para mesa de comedor
                     color = [100, 100, 255]
-                    
+                        
                     H_img, W_img, _ = arrImageNilColorsRes.shape
                     x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                     y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                    
+                        
                     arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
             else:
                 print("   [WARN] Dining Room: No se pudo colocar mesa")
 
-        # ---------------------------------------------------------
-        # KITCHEN - Encimera y Nevera
-        # ---------------------------------------------------------
-        # Índice 2 = Kitchen (color verde)
+            # ---------------------------------------------------------
+            # KITCHEN - Encimera y Nevera
+            # ---------------------------------------------------------
+            # Índice 2 = Kitchen (color verde)
         if len(lConnexComponents) > 2 and len(lConnexComponents[2][2]) > 0:
             kitchen_pixels = lConnexComponents[2][2][0]
-            
+                
             result_kitchen = solve_kitchen(gParam, kitchen_pixels, lPerimeter, pwalls, debug=True)
-            
+                
             if result_kitchen:
                 if result_kitchen["success"]:
                     print(f"   [OK] Kitchen: {result_kitchen['config_level']}")
                 else:
                     print(f"   [WARN] Kitchen: {result_kitchen['config_level']} (incompleto)")
-                
+                    
                 for item in result_kitchen["items"]:
                     x1, x2 = item["x1"], item["x2"]
                     y1, y2 = item["y1"], item["y2"]
-                    
+                        
                     # Colores: Marrón para encimera, Blanco para nevera
                     if item["type"] == "countertop":
                         color = [139, 90, 43]  # Marrón
                     else:  # fridge
                         color = [220, 220, 220]  # Gris claro (nevera)
-                    
+                        
                     H_img, W_img, _ = arrImageNilColorsRes.shape
                     x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                     y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                    
+                        
                     arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
             else:
                 print("   [WARN] Kitchen: No se pudo colocar muebles")
 
-        # ---------------------------------------------------------
-        # BATHROOM - Baño (Ducha, WC, Pica)
-        # ---------------------------------------------------------
-        # Índice 3 = Bathroom (color cyan/azul-verdoso)
+            # ---------------------------------------------------------
+            # BATHROOM - Baño (Ducha, WC, Pica)
+            # ---------------------------------------------------------
+            # Índice 3 = Bathroom (color cyan/azul-verdoso)
         if len(lConnexComponents) > 3 and len(lConnexComponents[3][2]) > 0:
             bathroom_pixels = lConnexComponents[3][2][0]
-            
+                
             result_bathroom = solve_bathroom(gParam, bathroom_pixels, lPerimeter, pwalls, debug=True)
-            
+                
             if result_bathroom:
                 if result_bathroom["success"]:
                     print(f"   [OK] Bathroom: {result_bathroom['config_level']}")
                 else:
                     print(f"   [WARN] Bathroom: {result_bathroom['config_level']} (incompleto)")
-                
+                    
                 for item in result_bathroom["items"]:
                     x1, x2 = item["x1"], item["x2"]
                     y1, y2 = item["y1"], item["y2"]
-                    
+                        
                     # Colores
                     if item["type"] == "shower":
                         color = [0, 255, 255]    # Cyan (Ducha)
@@ -301,11 +384,11 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
                         color = [139, 90, 43] # Marron (Pica)
                     else:
                         color = [128, 128, 128]  # Gris (Fallback)
-                    
+                        
                     H_img, W_img, _ = arrImageNilColorsRes.shape
                     x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                     y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                    
+                        
                     arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
             else:
                 print("   [WARN] Bathroom: No se pudo resolver la colocación")
@@ -316,30 +399,30 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
         # Índice 5 = LivingRoom (color rojo/naranja según dataset, en listaNilColors puede variar)
         if len(lConnexComponents) > 5 and len(lConnexComponents[0][2]) > 0:
             living_pixels = lConnexComponents[0][2][0]
-            
+                
             result_living = solve_living_room(gParam, living_pixels, lPerimeter, pwalls, debug=True)
-            
+                
             if result_living and result_living["success"]:
-                 print(f"   [OK] LivingRoom: {result_living['config_level']}")
-                 
-                 for item in result_living["items"]:
+                print(f"   [OK] LivingRoom: {result_living['config_level']}")
+                    
+                for item in result_living["items"]:
                     x1, x2 = item["x1"], item["x2"]
                     y1, y2 = item["y1"], item["y2"]
-                    
+                        
                     if item["type"] == "sofa":
                         color = [0, 0, 128] # Azul Oscuro
                     elif item["type"] == "tv_unit":
                         color = [50, 50, 50] # Gris Oscuro
                     else:
                         color = [100, 100, 100]
-                        
+                            
                     H_img, W_img, _ = arrImageNilColorsRes.shape
                     x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                     y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                    
+                        
                     arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
             else:
-                 print("   [WARN] LivingRoom: No se pudo colocar Sofá/TV")
+                print("   [WARN] LivingRoom: No se pudo colocar Sofá/TV")
 
         # ---------------------------------------------------------
         # SINGLE BEDROOM - Dormitorio Individual
@@ -347,30 +430,30 @@ def constructResultingImage (gParam, lConnexComponents, lCentroids=None, lAdjace
         # Índice 6 = Single Bedroom (o segundo dormitorio)
         if len(lConnexComponents) > 6 and len(lConnexComponents[6][2]) > 0:
             single_pixels = lConnexComponents[6][2][0]
-            
+                
             result_single = solve_single_bedroom(gParam, single_pixels, lPerimeter, pwalls, debug=True)
-            
+                
             if result_single and result_single["success"]:
-                 print(f"   [OK] SingleBedroom: {result_single['config_level']}")
-                 
-                 for item in result_single["items"]:
+                print(f"   [OK] SingleBedroom: {result_single['config_level']}")
+                    
+                for item in result_single["items"]:
                     x1, x2 = item["x1"], item["x2"]
                     y1, y2 = item["y1"], item["y2"]
-                    
+                        
                     if item["type"] == "bed_single":
                         color = [100, 149, 237]  # Cornflower Blue (Cama)
                     elif item["type"] == "wardrobe":
                         color = [139, 69, 19]    # Saddle Brown (Armario)
                     else:
                         color = [150, 150, 150]
-                        
+                            
                     H_img, W_img, _ = arrImageNilColorsRes.shape
                     x1_safe, x2_safe = max(0, x1), min(H_img, x2)
                     y1_safe, y2_safe = max(0, y1), min(W_img, y2)
-                    
+                        
                     arrImageNilColorsRes[x1_safe:x2_safe, y1_safe:y2_safe] = color
             else:
-                 print("   [WARN] SingleBedroom: No se pudo colocar muebles")
+                print("   [WARN] SingleBedroom: No se pudo colocar muebles")
 
     # Add the corners (if required) from lCorners
     if lCorners is not None:
@@ -2902,21 +2985,27 @@ def masiveRun(pathImages,pathSaveImages,matlabFileName):
             lIdDataMatlab.append(dataMatlab['name'])
             print('   SUCCESS!!!!!')
 
-        fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(30, 20)) #,layout="constrained")
+        fig, axs = plt.subplots(nrows=1, ncols=4, figsize=(30, 20)) #,layout="constrained")
         #
         axs[0].title.set_text("Original Image"); axs[0].imshow(oriPilImage);
         #
         intResImage = constructResultingImage \
                         (gParam, lConnexComponents, lCentroids=None, lAdjacencies=None,
-                         lCorners=None, lPerimeter=lPerimeter, plotPoint=False, pwalls=pwalls)
+                         lCorners=None, lPerimeter=None, plotPoint=False, pwalls=None)
         pilResImage = Image.frombytes('RGB', (gParam['width'], gParam['height']), bytes(intResImage))
         axs[1].title.set_text("Intermediate Image"); axs[1].imshow(pilResImage);
         #
         intResImage = constructResultingImage \
                         (gParam, lConnexComponents, lCentroids=lCentroids, lAdjacencies=lAdjacenciesCC,
-                        lCorners=lCornersIdealImage, lPerimeter=lPerimeter, plotPoint=failProcess, pwalls=pwalls)
+                        lCorners=lCornersIdealImage, lPerimeter=lPerimeter, plotPoint=failProcess, pwalls=None)
         pilResImage = Image.frombytes('RGB', (gParam['width'], gParam['height']), bytes(intResImage))
-        axs[2].title.set_text("Final Image"); axs[2].imshow(pilResImage);
+        axs[2].title.set_text("Centroids Image"); axs[2].imshow(pilResImage);
+        #
+        initResImage =  constructResultingImage \
+                        (gParam, lConnexComponents, lCentroids=None, lAdjacencies=None,
+                         lCorners=None, lPerimeter=lPerimeter, plotPoint=False, pwalls=pwalls)
+        pilInitResImage = Image.frombytes('RGB', (gParam['width'], gParam['height']), bytes(initResImage))
+        axs[3].title.set_text("Final Image"); axs[3].imshow(pilInitResImage);
         #
         fig.savefig(pathSaveImages + '/' + fileImage)
         #

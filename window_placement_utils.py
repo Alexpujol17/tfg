@@ -155,6 +155,14 @@ def solicitar_config_usuario():
     
     config['usar_probabilidades_usuario'] = True  # Flag para forzar uso
     
+    # 6. Restricciones
+    print("\n🚫 RESTRICCIONES")
+    try:
+        max_win = int(input("   Máximo de ventanas por habitación [2]: ") or 2)
+    except ValueError:
+        max_win = 2
+    config['max_ventanas_por_hab'] = max_win
+
     # Resumen
     print("\n" + "-"*60)
     print("   ✅ CONFIGURACIÓN GUARDADA:")
@@ -162,9 +170,11 @@ def solicitar_config_usuario():
     print(f"      Pesos: cobertura={config['score_weights']['cobertura']:.0%}, "
           f"solar={config['score_weights']['orientacion_solar']:.0%}")
     print(f"      Tamaño ventana: {config['tamaño_ventana_m']}m")
+    print(f"      Max ventanas/hab: {config['max_ventanas_por_hab']}")
     print("-"*60 + "\n")
     
     return config
+
 def segmentate_perimeter_into_walls_by_room(gParam, lPerimeter, lConnexComponents):
     """
     DIVISOR DE FACHADA:
@@ -387,11 +397,15 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, config=None):
     """
     import numpy as np
     from window_placement_utils import getPointsLineBetweenXY, get_config
+    from collections import Counter # ADDED
     
     # Obtener configuración (defaults + usuario)
     cfg = get_config(config)
     weights = cfg['score_weights']
     
+    # NUEVO: Límite de ventanas
+    MAX_VENTANAS_POR_HAB = cfg.get('max_ventanas_por_hab', 2)
+
     idx_balcon = gParam.get('idxNilColorBalcony', -999)
     height = gParam.get('height', 256)
     width = gParam.get('width', 256)
@@ -437,7 +451,8 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, config=None):
                 'pixels': set(room_pixels),
                 'centro': (avg_x, avg_y),
                 'es_balcon': (idxColor == idx_balcon),
-                'tiene_ventana': False
+                'tiene_ventana': False,
+                'num_ventanas': 0  # CRITICO para contar
             })
 
     total_habitables = sum(1 for h in habitaciones if not h['es_balcon'])
@@ -469,6 +484,7 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, config=None):
         
         if mejor_hab is not None and mejor_dist < MAX_DIST_ADYACENCIA * gParam.get('nPixelsPerMeter', 10):
             mejor_hab['tiene_ventana'] = True
+            mejor_hab['num_ventanas'] += 1 # Contamos
 
     # --- 4) CALCULAR MÉTRICAS ---
     
@@ -513,6 +529,18 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, config=None):
     
     # Penalización balcones
     score_final -= balcones_con_ventana * cfg.get('penalizacion_balcon', 0.15)
+    
+    # NUEVO: Penalización por Exceso de Ventanas
+    penalizacion_exceso = 0.0
+    habitaciones_exceso = 0
+    for h in habitaciones:
+        if not h['es_balcon'] and h['num_ventanas'] > MAX_VENTANAS_POR_HAB:
+             extra = h['num_ventanas'] - MAX_VENTANAS_POR_HAB
+             penalizacion_exceso += (extra * 0.25) # Penalización fuerte por cada ventana extra
+             habitaciones_exceso += 1
+    
+    score_final -= penalizacion_exceso
+    
     score_final = max(0.0, min(1.0, score_final))
 
     detalle = [(h['idx'], h['tipo'], 'BALCON' if h['es_balcon'] else 'ROOM', h['tiene_ventana']) for h in habitaciones]
@@ -525,7 +553,7 @@ def evaluar(gParam, lPerimeter, lConnexComponentsCentroids, config=None):
             'distribucion': score_distribucion,
             'simetria': score_simetria
         },
-        'penalizaciones': {'balcones_erroneos': balcones_con_ventana},
+        'penalizaciones': {'balcones_erroneos': balcones_con_ventana, 'exceso_ventanas': habitaciones_exceso},
         'debug_info': {
             'num_ventanas': num_ventanas,
             'num_habitaciones_total': total_habitables,
